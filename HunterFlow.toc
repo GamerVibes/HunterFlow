@@ -1,8 +1,8 @@
 ## Interface: 16001
 ## Title: HunterFlow
-## Notes: Auto-Shot-Leiste für Jäger.
+## Notes: Das Add-on für Jäger in WoW Forever. Hilft beim Kiten mit einer Auto-Shot-Leiste, weitere Module folgen.
 ## Author: Marvin
-## Version: 0.1.0
+## Version: 0.10.0
 ## SavedVariables: HunterFlowDB
 
 HunterFlow.lua
