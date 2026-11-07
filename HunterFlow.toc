@@ -1,0 +1,8 @@
+## Interface: 16001
+## Title: HunterFlow
+## Notes: Auto-Shot-Leiste für Jäger.
+## Author: Marvin
+## Version: 0.1.0
+## SavedVariables: HunterFlowDB
+
+HunterFlow.lua
