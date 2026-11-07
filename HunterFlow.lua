@@ -87,10 +87,8 @@ end
 local AUTO_SHOT_SPELL_ID = 75
 local RED_WINDOW = 0.5 -- Zielzeit, so lange muss der Jaeger vor dem Schuss stillstehen
 local PERFECT_WINDOW = 0.3 -- wer so kurz vor dem Zielen anhaelt, hat perfekt getimt
--- Zeitfenster nach dem Schuss, in dem ein Treffer als Einschlag des Pfeils zaehlt.
--- Das Spiel nennt den Verursacher nicht, ein Begleiter kann also mit ausloesen.
-local HIT_WINDOW_MIN, HIT_WINDOW_MAX = 0.15, 1.3
 local PRACTICE_SPEED = 2.5 -- Tempo im Uebungsmodus, falls keine Waffe lesbar ist
+local SHOT_SYMBOL_TIME = 0.35 -- so lange zeigt die Leiste nach dem Schuss den Bogen
 local MAX_MEASURED_SPEED = 6 -- Obergrenze fuer gemessene Abstaende ohne bekanntes Tempo
 local MEASURE_TOLERANCE = 0.2 -- erlaubte Abweichung nach oben, faengt Ping-Schwankungen ab
 local BAR_WIDTH, BAR_HEIGHT = 200, 14
@@ -106,8 +104,6 @@ local STREAK_MIN = 3 -- ab so vielen perfekten Schuessen in Folge zeigt der Coun
 local perfectStreak = 0
 local streakLabel, procText
 local perfectStop = false -- im goldenen Bereich angehalten und seitdem nicht gelaufen
-local hitFlashAnimation
-local awaitingHitSince -- Zeitpunkt des Schusses, dessen Einschlag noch aussteht
 local practiceActive = false -- Uebungsmodus: Schuesse werden nur simuliert
 local StartCycle -- beginnt einen neuen Schuss-Zyklus, unten definiert
 local duration -- Zeit von Schuss zu Schuss in Sekunden, gelesen oder gemessen
@@ -117,16 +113,21 @@ local aimStart -- Beginn des Stillstands beim Zielen, nil solange nicht gezielt 
 local aimDisturbed = false -- Bewegung hat das Zielen verzoegert, Abstand nicht messen
 local lastShotTime
 local isMoving = false
+local cycleStartedAt = 0 -- Zeitpunkt des letzten Schusses, ab hier laeuft die Zeit
+local goldAnnounced = false -- Hinweiston fuer diesen Zyklus schon gespielt
 local autoShotActive = false
 local barPositioning = false
 local dragging = false
 local currentPhase -- letzte gesetzte Phase, spart unnoetige Aufrufe
 
--- Farben fuer Leuchten und Kern. Der Kern bleibt fast weiss, das wirkt wie Neon.
+-- Der ganze Balken traegt die Farbe der Phase, das liest man auch im Augenwinkel.
+-- Der Kern bleibt fast weiss, das wirkt wie Neon.
 local PHASES = {
+    idle = { glow = { 0.55, 0.6, 0.57 }, core = { 0.78, 0.82, 0.8 } },
+    shot = { glow = { 0.25, 0.92, 0.42 }, core = { 0.77, 1, 0.82 }, icon = "SymbolBow", iconColor = { 0.3, 0.7, 1 } },
     run = { glow = { 0.25, 0.92, 0.42 }, core = { 0.77, 1, 0.82 }, icon = "SymbolRun" },
+    gold = { glow = { 1, 0.78, 0.24 }, core = { 1, 0.94, 0.74 }, icon = "SymbolHalt" },
     stand = { glow = { 1, 0.29, 0.22 }, core = { 1, 0.76, 0.72 }, icon = "SymbolHalt" },
-    ready = { glow = { 0.25, 0.92, 0.42 }, core = { 0.77, 1, 0.82 } },
 }
 
 local function SetPhase(phase)
@@ -139,7 +140,7 @@ local function SetPhase(phase)
     core:SetStatusBarColor(unpack(look.core))
     if look.icon then
         symbol:SetTexture(TEXTURE_PATH .. look.icon)
-        symbol:SetVertexColor(unpack(look.glow))
+        symbol:SetVertexColor(unpack(look.iconColor or look.glow))
         symbol:Show()
     else
         symbol:Hide()
@@ -169,64 +170,6 @@ local function HideIfIdle()
     end
 end
 
--- Volle Leiste, Timer aus. OnUpdate laeuft nur, solange der Timer laeuft.
-local function ShowReady()
-    frame:SetScript("OnUpdate", nil)
-    reloadEnd = nil
-    aimStart = nil
-    stopLine:Hide()
-    perfectLock:Hide()
-    SetStreak(0)
-    SetProgress(1)
-    -- Ohne laufenden Auto Shot passiert nichts, bis der Jaeger angreift.
-    label:SetText(autoShotActive and "bereit" or "angreifen")
-    SetPhase("ready")
-end
-
--- Ein Schuss-Zyklus hat zwei Phasen. Beim Nachladen darf man frei laufen, danach
--- muss man fuer die Zielzeit stillstehen. Bewegung startet das Zielen neu.
-local function OnUpdate()
-    local now = GetTime()
-
-    if now < reloadEnd then
-        local remaining = reloadEnd + RED_WINDOW - now
-        SetProgress(1 - remaining / duration)
-        label:SetFormattedText("laufen %.1f", remaining)
-        SetPhase("run")
-        return
-    end
-
-    -- Ohne Auto Shot kommt kein Schuss mehr, der Timer endet hier.
-    if not autoShotActive and not practiceActive then
-        ShowReady()
-        HideIfIdle()
-        return
-    end
-
-    if isMoving then
-        aimStart = nil
-        aimDisturbed = true
-        SetProgress(1 - RED_WINDOW / duration)
-        label:SetText("stehen")
-        SetPhase("stand")
-        return
-    end
-
-    aimStart = aimStart or now
-    local remaining = aimStart + RED_WINDOW - now
-    if remaining > 0 then
-        SetProgress(1 - remaining / duration)
-        label:SetFormattedText("stehen %.1f", remaining)
-        SetPhase("stand")
-    elseif practiceActive then
-        StartCycle(now) -- im Uebungsmodus faellt der Schuss genau hier
-    else
-        SetProgress(1)
-        label:SetText("bereit")
-        SetPhase("ready")
-    end
-end
-
 -- Spielt einen Effektton ueber den Soundeffekt-Kanal, im Menue abschaltbar.
 local function PlayEffectSound(name)
     if db.soundsOff then
@@ -236,6 +179,70 @@ local function PlayEffectSound(name)
     local level = db.soundLevel or DEFAULT_SOUND_LEVEL
     local suffix = level == 100 and "" or level
     PlaySoundFile(SOUND_PATH .. name .. suffix .. ".ogg", "SFX")
+end
+
+-- Leere graue Leiste, Timer aus: Die Zeit beginnt erst mit dem ersten Schuss.
+-- OnUpdate laeuft nur, solange der Timer laeuft.
+local function ShowIdle()
+    frame:SetScript("OnUpdate", nil)
+    reloadEnd = nil
+    aimStart = nil
+    stopLine:Hide()
+    perfectLock:Hide()
+    SetStreak(0)
+    SetProgress(0)
+    -- Ohne laufenden Auto Shot passiert nichts, bis der Jaeger angreift.
+    label:SetText(autoShotActive and "bereit" or "angreifen")
+    SetPhase("idle")
+end
+
+-- Ein Schuss-Zyklus hat zwei Phasen. Beim Nachladen darf man frei laufen, danach
+-- muss man fuer die Zielzeit stillstehen. Bewegung startet das Zielen neu.
+local function OnUpdate()
+    local now = GetTime()
+
+    if now < reloadEnd then
+        SetProgress(1 - (reloadEnd + RED_WINDOW - now) / duration)
+        if now - cycleStartedAt < SHOT_SYMBOL_TIME then
+            SetPhase("shot")
+        elseif now >= reloadEnd - PERFECT_WINDOW then
+            -- Hinweis zum Anhalten, damit man nicht auf den Balken schauen muss
+            if not goldAnnounced then
+                goldAnnounced = true
+                PlayEffectSound("Tick")
+            end
+            SetPhase("gold")
+        else
+            SetPhase("run")
+        end
+        return
+    end
+
+    -- Ohne Auto Shot kommt kein Schuss mehr, der Timer endet hier.
+    if not autoShotActive and not practiceActive then
+        ShowIdle()
+        HideIfIdle()
+        return
+    end
+
+    SetPhase("stand")
+
+    if isMoving then
+        aimStart = nil
+        aimDisturbed = true
+        SetProgress(1 - RED_WINDOW / duration)
+        return
+    end
+
+    aimStart = aimStart or now
+    local remaining = aimStart + RED_WINDOW - now
+    if remaining > 0 then
+        SetProgress(1 - remaining / duration)
+    elseif practiceActive then
+        StartCycle(now) -- im Uebungsmodus faellt der Schuss genau hier
+    else
+        SetProgress(1) -- wartet auf die Meldung des echten Schusses
+    end
 end
 
 -- Ein Schuss ist gefallen, echt oder im Uebungsmodus simuliert.
@@ -258,6 +265,9 @@ function StartCycle(now)
     perfectLock:Hide()
     aimDisturbed = false
     aimStart = nil
+    cycleStartedAt = now
+    goldAnnounced = false
+    label:SetText("")
 
     frame:Show()
     if duration then
@@ -303,7 +313,6 @@ local function OnSpellSucceeded(_, _, spellID)
         return
     end
     local now = GetTime()
-    awaitingHitSince = now
 
     -- Im Kampf ist das Tempo gesperrt, dort zaehlt der gemessene Schussabstand.
     -- So greift auch Hast, allerdings erst ab dem zweiten Schuss damit.
@@ -315,27 +324,6 @@ local function OnSpellSucceeded(_, _, spellID)
     end
     lastShotTime = now
     StartCycle(now)
-end
-
--- Der erste Treffer am Ziel im Zeitfenster loest einen Blitz aus, einmal je Schuss.
--- pcall, falls das Spiel die Art des Treffers an manchen Orten ebenfalls sperrt.
-local function OnTargetCombat(_, action)
-    if not awaitingHitSince then
-        return
-    end
-    local elapsed = GetTime() - awaitingHitSince
-    if elapsed > HIT_WINDOW_MAX then
-        awaitingHitSince = nil
-    elseif elapsed >= HIT_WINDOW_MIN then
-        local ok, isHit = pcall(function()
-            return action == "WOUND"
-        end)
-        if ok and isHit then
-            awaitingHitSince = nil
-            hitFlashAnimation:Stop()
-            hitFlashAnimation:Play()
-        end
-    end
 end
 
 local function StopDragging()
@@ -378,7 +366,7 @@ local function CreateProcEffect()
     burst:SetAlpha(0)
 
     local text = core:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    text:SetPoint("BOTTOM", label, "TOP", -9, 3)
+    text:SetPoint("BOTTOM", core, "TOP", 0, 33) -- ueber dem Symbol
     text:SetTextColor(1, 0.85, 0.35)
     text:SetText("Perfekt!")
     text:SetAlpha(0)
@@ -436,25 +424,70 @@ local function CreateProcEffect()
     }
 end
 
--- Kurzer weisser Blitz beim Einschlag, bewusst kleiner als der goldene Lichtstoss.
-local function CreateHitFlash()
-    local flash = core:CreateTexture(nil, "OVERLAY", nil, 1)
-    flash:SetTexture(TEXTURE_PATH .. "NeonGlow")
-    flash:SetBlendMode("ADD")
-    flash:SetAllPoints()
-    flash:SetAlpha(0)
+-- Meldung "Zu nah!": Die Fehlermeldung des Spiels loest sie aus, danach bleibt sie, bis
+-- Auto Shot das Ziel wieder erreicht. Die Reichweite allein unterscheidet nicht zwischen
+-- zu nah und zu weit, die Reichweite von Raptorstoss meldete im Test immer true.
+local RANGE_CHECK_INTERVAL = 0.2
+local TOO_CLOSE_HOLD = 0.5 -- Mindestdauer, die Reichweite springt erst kurz nach dem Fehler um
+local rangeText
+local tooClose = false
+local tooCloseUntil = 0
+local rangeCheckElapsed = 0
 
-    hitFlashAnimation = flash:CreateAnimationGroup()
-    local flashIn = hitFlashAnimation:CreateAnimation("Alpha")
-    flashIn:SetFromAlpha(0)
-    flashIn:SetToAlpha(1)
-    flashIn:SetDuration(0.04)
-    flashIn:SetOrder(1)
-    local flashOut = hitFlashAnimation:CreateAnimation("Alpha")
-    flashOut:SetFromAlpha(1)
-    flashOut:SetToAlpha(0)
-    flashOut:SetDuration(0.2)
-    flashOut:SetOrder(2)
+local function SafeText(value)
+    local ok, text = pcall(table.concat, { tostring(value) })
+    return ok and text or "gesperrt"
+end
+
+local function SpellName(spellID)
+    if GetSpellInfo then
+        return (GetSpellInfo(spellID))
+    end
+    return C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(spellID)
+end
+
+local function SpellRange(spellID)
+    local name = SpellName(spellID)
+    if IsSpellInRange then
+        return IsSpellInRange(name, "target")
+    end
+    return C_Spell and C_Spell.IsSpellInRange and C_Spell.IsSpellInRange(name, "target")
+end
+
+-- pcall, damit ein gesperrter Wert nur "keine Meldung" bedeutet statt eines Fehlers.
+-- Ohne Ziel kommt nil zurueck, dann gilt die Meldung ebenfalls nicht mehr.
+local function AutoShotOutOfRange()
+    local ok, result = pcall(function()
+        local inRange = SpellRange(AUTO_SHOT_SPELL_ID)
+        return inRange == false or inRange == 0
+    end)
+    return ok and result
+end
+
+local function CheckRange(_, elapsed)
+    if not tooClose then
+        return
+    end
+    rangeCheckElapsed = rangeCheckElapsed + elapsed
+    if rangeCheckElapsed < RANGE_CHECK_INTERVAL then
+        return
+    end
+    rangeCheckElapsed = 0
+
+    if GetTime() >= tooCloseUntil and not AutoShotOutOfRange() then
+        tooClose = false
+        rangeText:Hide()
+    end
+end
+
+local function OnErrorMessage(_, message)
+    local text = SafeText(message)
+    -- Der Vergleichstext steht zusaetzlich hier, belegt ist bisher nur der deutsche Wortlaut.
+    if text == SPELL_FAILED_TOO_CLOSE or text:find("zu nah", 1, true) then
+        tooClose = true
+        tooCloseUntil = GetTime() + TOO_CLOSE_HOLD
+        rangeText:Show()
+    end
 end
 
 local function CreateBar()
@@ -498,15 +531,27 @@ local function CreateBar()
     windowEdge:SetPoint("BOTTOMRIGHT", windowMark, "BOTTOMLEFT", 0, 1)
     windowEdge:Hide()
 
-    -- Symbol und Text ueber dem Balken, so verdecken sie die Fuellung nicht.
-    -- Der Text sitzt etwas rechts der Mitte, damit beide zusammen mittig wirken.
+    -- Grosses Symbol ueber dem Balken. Text gibt es nur vor dem ersten Schuss.
     label = core:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    label:SetPoint("BOTTOM", core, "TOP", 9, 3)
+    label:SetPoint("BOTTOM", core, "TOP", 0, 4)
 
     symbol = core:CreateTexture(nil, "OVERLAY")
-    symbol:SetSize(18, 18)
-    symbol:SetPoint("RIGHT", label, "LEFT", -3, 0)
+    symbol:SetSize(28, 28)
+    symbol:SetPoint("BOTTOM", core, "TOP", 0, 3)
     symbol:Hide()
+
+    -- Warnung direkt unter dem Balken. Eigener Rahmen, denn wer aus dem Nahkampf angreift,
+    -- hat noch keinen Schuss und damit auch keine sichtbare Leiste.
+    local rangeFrame = CreateFrame("Frame", nil, UIParent)
+    rangeFrame:SetSize(1, 1)
+    rangeFrame:SetPoint("TOP", frame, "BOTTOM", 0, -3)
+    rangeFrame:SetScript("OnUpdate", CheckRange)
+
+    rangeText = rangeFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    rangeText:SetPoint("TOP")
+    rangeText:SetTextColor(1, 0.25, 0.2)
+    rangeText:SetText("Zu nah!")
+    rangeText:Hide()
 
     -- Senkrechte Linie: Dort stand die Zeit, als der Jaeger zuletzt angehalten hat.
     stopLine = core:CreateTexture(nil, "OVERLAY", nil, 3)
@@ -515,7 +560,6 @@ local function CreateBar()
     stopLine:Hide()
 
     CreateProcEffect()
-    CreateHitFlash()
 
     frame:SetScript("OnMouseDown", function(self, button)
         if button == "LeftButton" and IsShiftKeyDown() then
@@ -526,18 +570,19 @@ local function CreateBar()
     frame:SetScript("OnMouseUp", StopDragging)
     frame:SetScript("OnHide", StopDragging)
 
-    ShowReady()
+    ShowIdle()
     frame:Hide()
 end
 
 function AutoShot:Init(moduleDB)
     db = moduleDB
+    db.rangeLog = nil -- Rest der Reichweiten-Messung
     CreateBar()
 
     HF:On("UNIT_SPELLCAST_SUCCEEDED", OnSpellSucceeded, "player")
-    HF:On("UNIT_COMBAT", OnTargetCombat, "target")
     HF:On("UNIT_RANGEDDAMAGE", ReadSpeed, "player")
     HF:On("PLAYER_ENTERING_WORLD", ReadSpeed)
+    HF:On("UI_ERROR_MESSAGE", OnErrorMessage)
 
     HF:On("PLAYER_STARTED_MOVING", function()
         isMoving = true
@@ -578,17 +623,17 @@ function AutoShot:Init(moduleDB)
         autoShotActive = true
         lastShotTime = nil
         ReadSpeed()
+        -- Die Leiste erscheint erst mit dem ersten Schuss, bis dahin passiert nichts.
         if not reloadEnd then
             label:SetText("bereit")
         end
-        frame:Show()
     end)
 
     -- Kommt STOP erst nach dem Kampfende, fiele die Leiste sonst nie mehr weg.
     HF:On("STOP_AUTOREPEAT_SPELL", function()
         autoShotActive = false
         if not reloadEnd then
-            ShowReady() -- schaltet den Text zurueck auf "angreifen"
+            ShowIdle() -- schaltet den Text zurueck auf "angreifen"
         end
         HideIfIdle()
     end)
@@ -618,7 +663,7 @@ function AutoShot:SetPositioning(enabled)
 end
 
 -- Uebungsmodus: Die Leiste laeuft ohne Ziel weiter, Schuesse fallen nach der Zielzeit.
--- Gemessen wird nur das Timing, der Treffer-Blitz bleibt aus.
+-- Gemessen wird nur das Timing.
 function AutoShot:SetPractice(enabled)
     practiceActive = enabled
     if enabled then
@@ -628,7 +673,7 @@ function AutoShot:SetPractice(enabled)
         end
         StartCycle(GetTime())
     else
-        ShowReady()
+        ShowIdle()
         HideIfIdle()
     end
 end
@@ -669,42 +714,36 @@ local DEFAULT_MINIMAP_ANGLE = 0 -- 0 Grad liegt rechts an der Minimap
 local Menu = {}
 local menuDB, minimapButton, menuFrame
 
--- Farben des Neon-Glas-Menues, passend zum Balken.
-local MENU_ACCENT = { 0.43, 0.96, 0.6 }
-local WHITE_TEXTURE = "Interface\\Buttons\\WHITE8x8"
-local SOUND_LEVELS = { 25, 50, 75, 100 }
-
-local function SetGlassLook(target, red, green, blue, fillAlpha, edgeAlpha)
-    target:SetBackdrop({ bgFile = WHITE_TEXTURE, edgeFile = WHITE_TEXTURE, edgeSize = 1 })
-    target:SetBackdropColor(red, green, blue, fillAlpha)
-    target:SetBackdropBorderColor(red, green, blue, edgeAlpha)
-end
-
-local function CreateNeonButton(name, width, height)
-    local button = CreateFrame("Button", name, menuFrame, "BackdropTemplate")
-    button:SetSize(width, height)
-    SetGlassLook(button, MENU_ACCENT[1], MENU_ACCENT[2], MENU_ACCENT[3], 0.14, 0.8)
-    button:SetNormalFontObject(GameFontHighlight)
-    button:SetHighlightTexture(WHITE_TEXTURE)
-    button:GetHighlightTexture():SetVertexColor(MENU_ACCENT[1], MENU_ACCENT[2], MENU_ACCENT[3], 0.2)
-    return button
-end
+-- Das Menue nutzt die Fenster-Vorlagen des Spiels, wie das GamerVibes-Add-on.
+local SOUND_LEVEL_MIN, SOUND_LEVEL_MAX, SOUND_LEVEL_STEP = 25, 100, 25
 
 local function CreateSectionTitle(text, y)
-    local title = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    title:SetPoint("TOPLEFT", 14, y)
-    title:SetTextColor(MENU_ACCENT[1], MENU_ACCENT[2], MENU_ACCENT[3])
+    local title = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", 16, y)
     title:SetText(text)
 end
 
 local function CreateMenu()
-    menuFrame = CreateFrame("Frame", "HunterFlowMenu", UIParent, "BackdropTemplate")
-    menuFrame:SetSize(300, 196)
+    -- Vorlage aus der modernen Oberflaeche. Fehlt sie im Client, ein
+    -- schlichtes Fenster mit Rahmen als Rueckfall.
+    local ok, window = pcall(CreateFrame, "Frame", "HunterFlowMenu", UIParent, "BasicFrameTemplateWithInset")
+    if not ok then
+        window = CreateFrame("Frame", "HunterFlowMenu", UIParent, "BackdropTemplate")
+        window:SetBackdrop({
+            bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+            edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+            tile = true,
+            tileSize = 32,
+            edgeSize = 32,
+            insets = { left = 8, right = 8, top = 8, bottom = 8 },
+        })
+        local close = CreateFrame("Button", "HunterFlowMenuClose", window, "UIPanelCloseButton")
+        close:SetPoint("TOPRIGHT", -4, -4)
+    end
+    menuFrame = window
+    menuFrame:SetSize(300, 214)
     menuFrame:SetPoint("CENTER")
     menuFrame:SetFrameStrata("DIALOG")
-    menuFrame:SetBackdrop({ bgFile = WHITE_TEXTURE, edgeFile = WHITE_TEXTURE, edgeSize = 1 })
-    menuFrame:SetBackdropColor(0.035, 0.06, 0.055, 0.9)
-    menuFrame:SetBackdropBorderColor(1, 1, 1, 0.28)
     menuFrame:SetMovable(true)
     menuFrame:SetClampedToScreen(true)
     menuFrame:EnableMouse(true)
@@ -714,47 +753,26 @@ local function CreateMenu()
     menuFrame:Hide()
     table.insert(UISpecialFrames, "HunterFlowMenu") -- schliesst mit Escape
 
-    -- Kopf: Jaeger-Symbol, Name und Schliessen, darunter die leuchtende Linie
-    local icon = menuFrame:CreateTexture(nil, "ARTWORK")
-    icon:SetTexture(HUNTER_ICON)
-    icon:SetTexCoord(HUNTER_ICON_LEFT, HUNTER_ICON_RIGHT, HUNTER_ICON_TOP, HUNTER_ICON_BOTTOM)
-    icon:SetSize(26, 26)
-    icon:SetPoint("TOPLEFT", 14, -12)
-
-    local title = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
-    title:SetPoint("LEFT", icon, "RIGHT", 8, 0)
-    title:SetText("HunterFlow")
-
-    local close = CreateNeonButton("HunterFlowMenuClose", 20, 20)
-    close:SetPoint("TOPRIGHT", -12, -14)
-    SetGlassLook(close, 1, 1, 1, 0.04, 0.3)
-    close:SetText("x")
-    close:SetScript("OnClick", function()
-        menuFrame:Hide()
-    end)
-
-    local headLine = menuFrame:CreateTexture(nil, "ARTWORK")
-    headLine:SetColorTexture(MENU_ACCENT[1], MENU_ACCENT[2], MENU_ACCENT[3], 0.8)
-    headLine:SetPoint("TOPLEFT", 14, -44)
-    headLine:SetPoint("TOPRIGHT", -14, -44)
-    headLine:SetHeight(1)
-
-    local headGlow = menuFrame:CreateTexture(nil, "ARTWORK")
-    headGlow:SetColorTexture(MENU_ACCENT[1], MENU_ACCENT[2], MENU_ACCENT[3], 0.14)
-    headGlow:SetPoint("TOPLEFT", headLine, "BOTTOMLEFT")
-    headGlow:SetPoint("TOPRIGHT", headLine, "BOTTOMRIGHT")
-    headGlow:SetHeight(3)
+    -- Titel in der Kopfleiste der Vorlage, sonst oben mittig im Fenster
+    if menuFrame.TitleText then
+        menuFrame.TitleText:SetText("HunterFlow")
+    else
+        local title = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        title:SetPoint("TOP", 0, -8)
+        title:SetText("HunterFlow")
+    end
 
     -- Bereich Leiste
-    CreateSectionTitle("LEISTE", -54)
+    CreateSectionTitle("Leiste", -34)
 
     local hint = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    hint:SetPoint("TOPLEFT", 14, -69)
+    hint:SetPoint("TOPLEFT", 16, -52)
     hint:SetText("Mit Shift und linker Maustaste verschieben")
 
     -- Der Knopf schliesst das Menue, damit beim Ueben nichts im Bild steht.
-    local practiceButton = CreateNeonButton("HunterFlowMenuPractice", 272, 24)
-    practiceButton:SetPoint("TOP", 0, -85)
+    local practiceButton = CreateFrame("Button", "HunterFlowMenuPractice", menuFrame, "UIPanelButtonTemplate")
+    practiceButton:SetSize(200, 22)
+    practiceButton:SetPoint("TOP", 0, -68)
     practiceButton:SetScript("OnClick", function(self)
         local start = not AutoShot:IsPracticing()
         AutoShot:SetPractice(start)
@@ -768,57 +786,44 @@ local function CreateMenu()
     practiceButton:SetText("Übungsmodus starten")
 
     -- Bereich Toene
-    CreateSectionTitle("TÖNE", -118)
+    CreateSectionTitle("Töne", -98)
 
-    local soundCheck = CreateFrame("CheckButton", "HunterFlowMenuSounds", menuFrame, "BackdropTemplate")
-    soundCheck:SetSize(15, 15)
-    soundCheck:SetPoint("TOPLEFT", 14, -134)
-    SetGlassLook(soundCheck, MENU_ACCENT[1], MENU_ACCENT[2], MENU_ACCENT[3], 0.14, 0.8)
-    soundCheck:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check")
-    soundCheck:GetCheckedTexture():SetVertexColor(MENU_ACCENT[1], MENU_ACCENT[2], MENU_ACCENT[3])
+    local soundCheck = CreateFrame("CheckButton", "HunterFlowMenuSounds", menuFrame, "UICheckButtonTemplate")
+    soundCheck:SetPoint("TOPLEFT", 12, -112)
     soundCheck:SetScript("OnClick", function(self)
-        AutoShot:SetSoundsEnabled(self:GetChecked())
+        AutoShot:SetSoundsEnabled(self:GetChecked() and true or false)
     end)
 
-    local soundLabel = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    soundLabel:SetPoint("LEFT", soundCheck, "RIGHT", 7, 0)
+    local soundLabel = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    soundLabel:SetPoint("LEFT", soundCheck, "RIGHT", 2, 1)
     soundLabel:SetText("Töne bei perfektem Timing")
 
-    local volumeLabel = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    volumeLabel:SetPoint("TOPLEFT", 14, -160)
-    volumeLabel:SetText("Lautstärke")
+    -- Regler in Stufen, WoW kann eigenen Toenen keine freie Lautstaerke mitgeben.
+    local sliderName = "HunterFlowMenuVolume"
+    local volume = CreateFrame("Slider", sliderName, menuFrame, "OptionsSliderTemplate")
+    volume:SetPoint("TOPLEFT", 20, -160)
+    volume:SetWidth(260)
+    volume:SetMinMaxValues(SOUND_LEVEL_MIN, SOUND_LEVEL_MAX)
+    volume:SetValueStep(SOUND_LEVEL_STEP)
+    if volume.SetObeyStepOnDrag then
+        volume:SetObeyStepOnDrag(true)
+    end
+    _G[sliderName .. "Low"]:SetText(SOUND_LEVEL_MIN .. " %")
+    _G[sliderName .. "High"]:SetText(SOUND_LEVEL_MAX .. " %")
 
-    local volumeValue = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    volumeValue:SetPoint("TOPRIGHT", -14, -160)
-
-    -- Vier anklickbare Stufen statt eines Reglers, mehr kann WoW bei eigenen Toenen nicht.
-    local segments = {}
-    local function UpdateVolume()
-        local level = AutoShot:GetSoundLevel()
-        volumeValue:SetFormattedText("%d %%", level)
-        for index, segment in ipairs(segments) do
-            if SOUND_LEVELS[index] <= level then
-                segment.fill:SetColorTexture(MENU_ACCENT[1], MENU_ACCENT[2], MENU_ACCENT[3], 1)
-            else
-                segment.fill:SetColorTexture(1, 1, 1, 0.15)
-            end
-        end
+    local function ShowVolumeText(level)
+        _G[sliderName .. "Text"]:SetText("Lautstärke: " .. level .. " %")
     end
 
-    for index, level in ipairs(SOUND_LEVELS) do
-        local segment = CreateFrame("Button", nil, menuFrame)
-        segment:SetSize(34, 14) -- etwas hoeher als der Balken, das trifft sich leichter
-        segment:SetPoint("TOPLEFT", 86 + (index - 1) * 37, -158)
-        segment.fill = segment:CreateTexture(nil, "ARTWORK")
-        segment.fill:SetPoint("LEFT")
-        segment.fill:SetPoint("RIGHT")
-        segment.fill:SetHeight(8)
-        segment:SetScript("OnClick", function()
+    -- Beim Oeffnen setzt der Code den Wert selbst, dann soll kein Probeton erklingen.
+    local refreshing = false
+    volume:SetScript("OnValueChanged", function(_, value)
+        local level = math.floor(value / SOUND_LEVEL_STEP + 0.5) * SOUND_LEVEL_STEP
+        ShowVolumeText(level)
+        if not refreshing and level ~= AutoShot:GetSoundLevel() then
             AutoShot:SetSoundLevel(level)
-            UpdateVolume()
-        end)
-        segments[index] = segment
-    end
+        end
+    end)
 
     -- Solange das Menue offen ist, steht die Leiste zum Verschieben bereit.
     -- Erst nach dem Hide oben setzen, sonst liefe OnHide schon beim Aufbau.
@@ -826,7 +831,10 @@ local function CreateMenu()
         HF:SetPositioning(true)
         practiceButton:SetText(AutoShot:IsPracticing() and "Übungsmodus beenden" or "Übungsmodus starten")
         soundCheck:SetChecked(AutoShot:AreSoundsEnabled())
-        UpdateVolume()
+        refreshing = true
+        volume:SetValue(AutoShot:GetSoundLevel())
+        ShowVolumeText(AutoShot:GetSoundLevel())
+        refreshing = false
     end)
     menuFrame:SetScript("OnHide", function()
         HF:SetPositioning(false)

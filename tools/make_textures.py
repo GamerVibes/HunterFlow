@@ -185,8 +185,38 @@ def symbol_halt():
     return symbol_finish(layer)
 
 
+def symbol_bow():
+    """Gespannter Bogen von der Seite mit waagerechtem Pfeil nach rechts."""
+    size = SYMBOL_SIZE * SYMBOL_SCALE
+    layer = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(layer)
+    white = (255, 255, 255, 255)
+
+    def point(x, y):
+        return x * UNIT, y * UNIT
+
+    # Bogenholz als flacher Halbbogen nach rechts
+    draw.arc(
+        (-2.5 * UNIT, 2.0 * UNIT, 14.5 * UNIT, 22.0 * UNIT),
+        start=-90,
+        end=90,
+        fill=white,
+        width=round(2.6 * UNIT),
+    )
+
+    # Sehne von den Bogenenden zur Pfeilnocke, nach hinten gezogen
+    nock = (2.0, 12.0)
+    draw.line([point(6.0, 2.6), point(*nock), point(6.0, 21.4)], fill=white, width=round(1.2 * UNIT))
+
+    # Pfeil mit Spitze
+    draw.line([point(*nock), point(19.0, 12.0)], fill=white, width=round(1.7 * UNIT))
+    draw.polygon([point(23.0, 12.0), point(17.5, 8.4), point(17.5, 15.6)], fill=white)
+    return symbol_finish(layer)
+
+
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
+    symbol_bow().save(OUT / "SymbolBow.tga")
     track().save(OUT / "FrostTrack.tga")
     fill().save(OUT / "FrostFill.tga")
     neon_track().save(OUT / "NeonTrack.tga")

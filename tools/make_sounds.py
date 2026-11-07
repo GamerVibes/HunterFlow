@@ -56,6 +56,14 @@ def proc_sound():
     return buffer
 
 
+def tick_sound():
+    """Hinweis zum Anhalten: kurzer, weicher Ton am Beginn des Goldbereichs."""
+    buffer = [0.0] * int(0.1 * RATE)
+    ping(buffer, 0.0, 880, 0.6, 0.022)
+    ping(buffer, 0.0, 1320, 0.2, 0.014)
+    return buffer
+
+
 def write_ogg(buffer, path, peak):
     """Normalisiert auf den Zielpegel und wandelt ueber eine WAV-Datei nach OGG."""
     loudest = max(abs(v) for v in buffer)
@@ -78,9 +86,10 @@ if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
     # WoW kann eigenen Toenen keine Lautstaerke mitgeben, daher eine Datei je Stufe.
     # Die volle Stufe hat keinen Zusatz im Namen, zum Beispiel Lock.ogg und Lock50.ogg.
-    lock, proc = lock_sound(), proc_sound()
+    lock, proc, tick = lock_sound(), proc_sound(), tick_sound()
     for level in (100, 75, 50, 25):
         suffix = "" if level == 100 else str(level)
+        write_ogg(tick, OUT / ("Tick%s.ogg" % suffix), 0.5 * level / 100)
         write_ogg(lock, OUT / ("Lock%s.ogg" % suffix), 0.6 * level / 100)
         write_ogg(proc, OUT / ("Proc%s.ogg" % suffix), 0.8 * level / 100)
     print("Geschrieben nach", OUT)
