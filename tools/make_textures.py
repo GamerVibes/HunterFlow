@@ -214,8 +214,25 @@ def symbol_bow():
     return symbol_finish(layer)
 
 
+SHORT_WIDTH = 128  # Zielfeld, 40 x 14 im Spiel, sonst wuerden die Ecken gestaucht
+
+
+def save_short_versions():
+    """Kurze Fassung von Glas, Kern und Leuchten fuer das Zielfeld."""
+    global WIDTH
+    saved = WIDTH
+    WIDTH = SHORT_WIDTH
+    try:
+        neon_track().save(OUT / "NeonTrackShort.tga")
+        neon_core().save(OUT / "NeonCoreShort.tga")
+        neon_glow().save(OUT / "NeonGlowShort.tga")
+    finally:
+        WIDTH = saved
+
+
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
+    save_short_versions()
     symbol_bow().save(OUT / "SymbolBow.tga")
     track().save(OUT / "FrostTrack.tga")
     fill().save(OUT / "FrostFill.tga")

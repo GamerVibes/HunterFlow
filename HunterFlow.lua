@@ -92,13 +92,21 @@ local SHOT_SYMBOL_TIME = 0.35 -- so lange zeigt die Leiste nach dem Schuss den B
 local MAX_MEASURED_SPEED = 6 -- Obergrenze fuer gemessene Abstaende ohne bekanntes Tempo
 local MEASURE_TOLERANCE = 0.2 -- erlaubte Abweichung nach oben, faengt Ping-Schwankungen ab
 local BAR_WIDTH, BAR_HEIGHT = 200, 14
+local AIM_WIDTH, BAR_GAP = 40, 4 -- links das Zielfeld, rechts daneben die Nachladeleiste
+local RELOAD_WIDTH = BAR_WIDTH - AIM_WIDTH - BAR_GAP
+local ABORT_TIME = 0.9 -- so lange laeuft die Anzeige "Zielen unterbrochen"
+local AIM_LOG_SIZE = 30 -- so viele gemessene Zielzeiten behaelt das Add-on
 local DEFAULT_Y = -150 -- etwas unterhalb der Bildschirmmitte
 local TEXTURE_PATH = "Interface\\AddOns\\HunterFlow\\Textures\\"
 local SOUND_PATH = "Interface\\AddOns\\HunterFlow\\Sounds\\"
 local DEFAULT_SOUND_LEVEL = 75 -- Prozent, moeglich sind 25, 50, 75 und 100
 
 local AutoShot = {}
-local db, frame, bar, core, windowMark, windowEdge, perfectMark, stopLine, symbol, label, procAnimation
+local db, frame, content, bar, core, perfectMark, stopLine, symbol, label, procAnimation
+local aimBar, aimCore, aimFlash -- Zielfeld links, dort steht der Jaeger bis zum Schuss
+local hintText, shotAnimation, rangeText
+local abortAt, abortFrom -- Beginn und Fuellstand eines unterbrochenen Zielens
+local reloadTime -- Nachladezeit, also Tempo minus Zielzeit
 local perfectLock, lockAnimation -- leuchtendes Gold, sobald im goldenen Bereich angehalten wurde
 local STREAK_MIN = 3 -- ab so vielen perfekten Schuessen in Folge zeigt der Counter an
 local perfectStreak = 0
@@ -124,7 +132,7 @@ local currentPhase -- letzte gesetzte Phase, spart unnoetige Aufrufe
 -- Der Kern bleibt fast weiss, das wirkt wie Neon.
 local PHASES = {
     idle = { glow = { 0.55, 0.6, 0.57 }, core = { 0.78, 0.82, 0.8 } },
-    shot = { glow = { 0.25, 0.92, 0.42 }, core = { 0.77, 1, 0.82 }, icon = "SymbolBow", iconColor = { 0.3, 0.7, 1 } },
+    shot = { glow = { 0.3, 0.7, 1 }, core = { 0.82, 0.93, 1 }, icon = "SymbolBow", iconColor = { 0.3, 0.7, 1 } },
     run = { glow = { 0.25, 0.92, 0.42 }, core = { 0.77, 1, 0.82 }, icon = "SymbolRun" },
     gold = { glow = { 1, 0.78, 0.24 }, core = { 1, 0.94, 0.74 }, icon = "SymbolHalt" },
     stand = { glow = { 1, 0.29, 0.22 }, core = { 1, 0.76, 0.72 }, icon = "SymbolHalt" },
@@ -147,9 +155,78 @@ local function SetPhase(phase)
     end
 end
 
+-- Fuellung der Nachladeleiste.
 local function SetProgress(value)
     bar:SetValue(value)
     core:SetValue(value)
+end
+
+-- Fuellung des Zielfelds, rot beim Zielen, grau beim Auslaufen nach einem Abbruch.
+local AIM_LOOK = { glow = { 1, 0.29, 0.22 }, core = { 1, 0.76, 0.72 } }
+local AIM_FADED = { glow = { 0.43, 0.35, 0.34 }, core = { 0.66, 0.58, 0.56 } }
+
+local function SetAim(value, faded)
+    local look = faded and AIM_FADED or AIM_LOOK
+    aimBar:SetStatusBarColor(unpack(look.glow))
+    aimCore:SetStatusBarColor(unpack(look.core))
+    aimBar:SetValue(value)
+    aimCore:SetValue(value)
+end
+
+-- Hinweis unter der Leiste. "Zu nah!" steht an derselben Stelle und hat Vorrang.
+local HINT_ABORT = { 1, 0.54, 0.48 }
+local HINT_STOP = { 1, 0.7, 0.66 }
+
+local function SetHint(text, alpha, color)
+    if text and not rangeText:IsShown() then
+        hintText:SetText(text)
+        hintText:SetTextColor(unpack(color))
+        hintText:SetAlpha(alpha)
+        hintText:Show()
+    else
+        hintText:Hide()
+    end
+end
+
+-- Zielen unterbrochen: Die Leiste wackelt, das Zielfeld blinkt rot und laeuft grau aus.
+-- Auto Shot bleibt dabei an, das Zielen beginnt neu, sobald der Jaeger wieder steht.
+local function StopAbort()
+    abortAt = nil
+    aimFlash:SetAlpha(0)
+    content:SetPoint("CENTER", frame, "CENTER", 0, 0)
+end
+
+-- Laeuft in jedem Bild mit und meldet, ob das Zielfeld gerade grau auslaeuft.
+local function UpdateAbort(now)
+    if not abortAt then
+        return false
+    end
+    local age = now - abortAt
+    if age >= ABORT_TIME then
+        StopAbort()
+        return false
+    end
+
+    local shake = 0
+    if age < 0.3 then
+        shake = math.sin(age * 70) * 3 * (1 - age / 0.3)
+    end
+    content:SetPoint("CENTER", frame, "CENTER", shake, 0)
+
+    local flash = 0
+    if age < 0.45 then
+        flash = 0.6 * (1 - age / 0.45) * (math.sin(age * 40) > 0 and 1 or 0.35)
+    end
+    aimFlash:SetAlpha(flash)
+
+    local alpha = age < 0.12 and age / 0.12 or math.min(1, (ABORT_TIME - age) / 0.3)
+    SetHint("Zielen unterbrochen", alpha, HINT_ABORT)
+
+    if age < 0.25 then
+        SetAim(abortFrom * (1 - age / 0.25), true)
+        return true
+    end
+    return false
 end
 
 -- Counter fuer perfekte Schuesse in Folge, sichtbar erst ab STREAK_MIN.
@@ -181,28 +258,39 @@ local function PlayEffectSound(name)
     PlaySoundFile(SOUND_PATH .. name .. suffix .. ".ogg", "SFX")
 end
 
--- Leere graue Leiste, Timer aus: Die Zeit beginnt erst mit dem ersten Schuss.
--- OnUpdate laeuft nur, solange der Timer laeuft.
+-- Leere graue Leiste, Timer aus. OnUpdate laeuft nur, solange Auto Shot, Uebungsmodus
+-- oder ein Nachladen aktiv ist.
 local function ShowIdle()
     frame:SetScript("OnUpdate", nil)
     reloadEnd = nil
     aimStart = nil
+    StopAbort()
+    SetHint(nil)
     stopLine:Hide()
     perfectLock:Hide()
     SetStreak(0)
     SetProgress(0)
+    SetAim(0)
     -- Ohne laufenden Auto Shot passiert nichts, bis der Jaeger angreift.
-    label:SetText(autoShotActive and "bereit" or "angreifen")
+    label:SetText(autoShotActive and "" or "angreifen")
     SetPhase("idle")
 end
 
--- Ein Schuss-Zyklus hat zwei Phasen. Beim Nachladen darf man frei laufen, danach
--- muss man fuer die Zielzeit stillstehen. Bewegung startet das Zielen neu.
+-- Ein Schuss-Zyklus hat zwei Phasen und beginnt mit dem Zielen: links im Zielfeld stillstehen,
+-- am Ende faellt der Schuss. Danach rechts nachladen, dabei darf man laufen, am Ende kommt Gold.
+-- So sieht der erste Schuss genauso aus wie jeder weitere. Bewegung startet das Zielen neu.
 local function OnUpdate()
     local now = GetTime()
+    local draining = UpdateAbort(now)
 
-    if now < reloadEnd then
-        SetProgress(1 - (reloadEnd + RED_WINDOW - now) / duration)
+    if reloadEnd and now < reloadEnd then
+        SetProgress((now - cycleStartedAt) / reloadTime)
+        if not draining then
+            SetAim(0)
+        end
+        if not abortAt then
+            SetHint(nil)
+        end
         if now - cycleStartedAt < SHOT_SYMBOL_TIME then
             SetPhase("shot")
         elseif now >= reloadEnd - PERFECT_WINDOW then
@@ -225,24 +313,41 @@ local function OnUpdate()
         return
     end
 
+    -- Zielen: Die Nachladeleiste ist leer, das Zielfeld fuellt sich.
     SetPhase("stand")
+    SetProgress(0)
+
+    -- Ohne bekanntes Tempo ist die Nachladezeit offen, bis der zweite Schuss sie misst.
+    if not duration and lastShotTime then
+        SetAim(0)
+        return
+    end
 
     if isMoving then
         aimStart = nil
         aimDisturbed = true
-        SetProgress(1 - RED_WINDOW / duration)
+        if not draining then
+            SetAim(0)
+        end
+        if not abortAt then
+            -- Wartet aufs Anhalten, das Zielfeld pulsiert.
+            aimFlash:SetAlpha(0.25 + 0.25 * math.max(0, math.sin(now * 14)))
+            SetHint("anhalten", 1, HINT_STOP)
+        end
         return
     end
 
-    aimStart = aimStart or now
-    local remaining = aimStart + RED_WINDOW - now
-    if remaining > 0 then
-        SetProgress(1 - remaining / duration)
-    elseif practiceActive then
-        StartCycle(now) -- im Uebungsmodus faellt der Schuss genau hier
-    else
-        SetProgress(1) -- wartet auf die Meldung des echten Schusses
+    if not abortAt then
+        aimFlash:SetAlpha(0)
+        SetHint(nil)
     end
+    aimStart = aimStart or now
+    local filled = (now - aimStart) / RED_WINDOW
+    if filled >= 1 and practiceActive then
+        StartCycle(now) -- im Uebungsmodus faellt der Schuss genau hier
+        return
+    end
+    SetAim(math.min(filled, 1)) -- voll wartet es auf die Meldung des echten Schusses
 end
 
 -- Ein Schuss ist gefallen, echt oder im Uebungsmodus simuliert.
@@ -269,28 +374,30 @@ function StartCycle(now)
     goldAnnounced = false
     label:SetText("")
 
+    -- Der Schuss ist raus: Abbruch-Anzeige weg, die Leiste leuchtet kurz blau.
+    StopAbort()
+    SetHint(nil)
+    SetAim(0)
+    shotAnimation:Stop()
+    shotAnimation:Play()
+
     frame:Show()
+    frame:SetScript("OnUpdate", OnUpdate)
     if duration then
-        reloadEnd = now + duration - RED_WINDOW
-        frame:SetScript("OnUpdate", OnUpdate)
+        reloadEnd = now + reloadTime
     end
 end
 
 local function SetDuration(speed)
     duration = speed
-    -- Der linke Rand liegt genau dort, wo die Fuellung beim Zielen beginnt.
-    local share = math.min(RED_WINDOW / speed, 1)
-    windowMark:SetPoint("TOPLEFT", BAR_WIDTH * (1 - share), -2)
-    windowMark:SetPoint("BOTTOMRIGHT", -4, 2)
-    windowMark:Show()
-    -- Goldener Bereich direkt vor dem roten, dort anhalten ist perfekt.
-    local perfectStart = math.max(1 - (RED_WINDOW + PERFECT_WINDOW) / speed, 0)
-    perfectMark:SetPoint("TOPLEFT", BAR_WIDTH * perfectStart, -2)
-    perfectMark:SetPoint("BOTTOMRIGHT", -BAR_WIDTH * share, 2)
+    reloadTime = math.max(speed - RED_WINDOW, 0.1)
+    -- Gold am Ende der Nachladeleiste, dort anhalten ist perfekt.
+    local share = math.min(PERFECT_WINDOW / reloadTime, 1)
+    perfectMark:SetPoint("TOPLEFT", RELOAD_WIDTH * (1 - share), -2)
+    perfectMark:SetPoint("BOTTOMRIGHT", -4, 2)
     perfectMark:Show()
-    perfectLock:SetPoint("TOPLEFT", core, "TOPLEFT", BAR_WIDTH * perfectStart, -2)
-    perfectLock:SetPoint("BOTTOMRIGHT", core, "BOTTOMRIGHT", -BAR_WIDTH * share, 2)
-    windowEdge:Show()
+    perfectLock:SetPoint("TOPLEFT", core, "TOPLEFT", RELOAD_WIDTH * (1 - share), -2)
+    perfectLock:SetPoint("BOTTOMRIGHT", core, "BOTTOMRIGHT", -4, 2)
 end
 
 -- Liest das Tempo und meldet, ob das geklappt hat. Im Kampf liefert das Spiel einen
@@ -308,11 +415,34 @@ local function ReadSpeed()
     return false
 end
 
+-- Messung: Wie lange zielt Forever wirklich, vor allem vor dem ersten Schuss?
+-- Gespeichert in HunterFlowDB.autoShot.aimLog, lesbar nach /reload. Wieder ausbauen,
+-- sobald die Werte ausgewertet sind.
+local function LogAim(now)
+    local log = db.aimLog or {}
+    db.aimLog = log
+    local kind = lastShotTime and "weiter" or "erster"
+    local entry
+    if aimStart then
+        -- aimStart beginnt nach jeder Bewegung neu, gemessen wird also ab dem letzten Anhalten.
+        entry = string.format("%s zielen %.3f", kind, now - aimStart)
+    elseif reloadEnd and now < reloadEnd then
+        entry = string.format("%s frueh %.3f", kind, reloadEnd - now) -- Schuss vor dem erwarteten Ende
+    else
+        entry = kind .. " ohne zielen" -- Schuss kam, waehrend das Add-on keinen Stillstand sah
+    end
+    table.insert(log, entry)
+    while #log > AIM_LOG_SIZE do
+        table.remove(log, 1)
+    end
+end
+
 local function OnSpellSucceeded(_, _, spellID)
     if spellID ~= AUTO_SHOT_SPELL_ID then
         return
     end
     local now = GetTime()
+    LogAim(now)
 
     -- Im Kampf ist das Tempo gesperrt, dort zaehlt der gemessene Schussabstand.
     -- So greift auch Hast, allerdings erst ab dem zweiten Schuss damit.
@@ -361,12 +491,12 @@ local function CreateProcEffect()
     burst:SetTexture(TEXTURE_PATH .. "NeonGlow")
     burst:SetVertexColor(1, 0.82, 0.3)
     burst:SetBlendMode("ADD")
-    burst:SetPoint("CENTER")
+    burst:SetPoint("CENTER", content, "CENTER")
     burst:SetSize(BAR_WIDTH + 12, BAR_HEIGHT + 22)
     burst:SetAlpha(0)
 
     local text = core:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    text:SetPoint("BOTTOM", core, "TOP", 0, 33) -- ueber dem Symbol
+    text:SetPoint("BOTTOM", content, "TOP", 0, 33) -- ueber dem Symbol
     text:SetTextColor(1, 0.85, 0.35)
     text:SetText("Perfekt!")
     text:SetAlpha(0)
@@ -374,7 +504,7 @@ local function CreateProcEffect()
 
     -- Bleibt rechts ueber dem Balken stehen, bis die Serie reisst.
     streakLabel = core:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    streakLabel:SetPoint("BOTTOMRIGHT", core, "TOPRIGHT", 0, 3)
+    streakLabel:SetPoint("BOTTOMRIGHT", content, "TOPRIGHT", 0, 3)
     streakLabel:SetTextColor(1, 0.85, 0.35)
     streakLabel:Hide()
 
@@ -429,7 +559,6 @@ end
 -- zu nah und zu weit, die Reichweite von Raptorstoss meldete im Test immer true.
 local RANGE_CHECK_INTERVAL = 0.2
 local TOO_CLOSE_HOLD = 0.5 -- Mindestdauer, die Reichweite springt erst kurz nach dem Fehler um
-local rangeText
 local tooClose = false
 local tooCloseUntil = 0
 local rangeCheckElapsed = 0
@@ -497,13 +626,56 @@ local function CreateBar()
     frame:SetMovable(true)
     frame:SetClampedToScreen(true)
 
+    -- Alles Sichtbare sitzt auf einem Innenrahmen. Der darf beim Abbruch wackeln,
+    -- ohne die gespeicherte Position der Leiste zu veraendern.
+    content = CreateFrame("Frame", nil, frame)
+    content:SetSize(BAR_WIDTH, BAR_HEIGHT)
+    content:SetPoint("CENTER", frame, "CENTER", 0, 0)
+
     -- Neon: dunkles Glas hinten, darauf Leuchten und heller Kern als zwei Balken.
     -- Nur so bleibt die Mitte fast weiss, waehrend das Leuchten die Farbe traegt.
-    local glass = frame:CreateTexture(nil, "BACKGROUND")
+    -- Links das Zielfeld: Hier steht der Jaeger, am Ende faellt der Schuss.
+    local aimBox = CreateFrame("Frame", nil, content)
+    aimBox:SetSize(AIM_WIDTH, BAR_HEIGHT)
+    aimBox:SetPoint("LEFT")
+
+    local aimGlass = aimBox:CreateTexture(nil, "BACKGROUND")
+    aimGlass:SetTexture(TEXTURE_PATH .. "NeonTrackShort")
+    aimGlass:SetAllPoints()
+
+    local aimTint = aimBox:CreateTexture(nil, "BORDER")
+    aimTint:SetColorTexture(1, 0.24, 0.18, 0.2)
+    aimTint:SetPoint("TOPLEFT", 3, -2)
+    aimTint:SetPoint("BOTTOMRIGHT", -3, 2)
+
+    aimBar = CreateFrame("StatusBar", nil, aimBox)
+    aimBar:SetAllPoints()
+    aimBar:SetStatusBarTexture(TEXTURE_PATH .. "NeonGlowShort")
+    aimBar:GetStatusBarTexture():SetBlendMode("ADD")
+    aimBar:SetMinMaxValues(0, 1)
+
+    aimCore = CreateFrame("StatusBar", nil, aimBar)
+    aimCore:SetAllPoints()
+    aimCore:SetStatusBarTexture(TEXTURE_PATH .. "NeonCoreShort")
+    aimCore:SetMinMaxValues(0, 1)
+
+    -- Blinkt beim Abbruch und pulsiert, solange der Jaeger noch laeuft.
+    aimFlash = aimCore:CreateTexture(nil, "OVERLAY")
+    aimFlash:SetColorTexture(1, 0.29, 0.22, 1)
+    aimFlash:SetPoint("TOPLEFT", 2, -2)
+    aimFlash:SetPoint("BOTTOMRIGHT", -2, 2)
+    aimFlash:SetAlpha(0)
+
+    -- Rechts die Nachladeleiste: Hier darf man laufen, am Ende kommt Gold zum Anhalten.
+    local reloadBox = CreateFrame("Frame", nil, content)
+    reloadBox:SetSize(RELOAD_WIDTH, BAR_HEIGHT)
+    reloadBox:SetPoint("RIGHT")
+
+    local glass = reloadBox:CreateTexture(nil, "BACKGROUND")
     glass:SetTexture(TEXTURE_PATH .. "NeonTrack")
     glass:SetAllPoints()
 
-    bar = CreateFrame("StatusBar", nil, frame)
+    bar = CreateFrame("StatusBar", nil, reloadBox)
     bar:SetAllPoints()
     bar:SetStatusBarTexture(TEXTURE_PATH .. "NeonGlow")
     bar:GetStatusBarTexture():SetBlendMode("ADD")
@@ -514,31 +686,49 @@ local function CreateBar()
     core:SetStatusBarTexture(TEXTURE_PATH .. "NeonCore")
     core:SetMinMaxValues(0, 1)
 
-    -- Roter Bereich am rechten Ende, liegt ueber dem Leuchten und unter dem Kern.
-    windowMark = bar:CreateTexture(nil, "OVERLAY", nil, -1)
-    windowMark:SetColorTexture(1, 0.24, 0.18, 0.2)
-    windowMark:Hide()
-
+    -- Goldener Bereich am rechten Ende, liegt ueber dem Leuchten und unter dem Kern.
     perfectMark = bar:CreateTexture(nil, "OVERLAY", nil, -1)
     perfectMark:SetColorTexture(1, 0.8, 0.25, 0.55)
     perfectMark:Hide()
 
-    -- Feine Linie am Beginn des roten Bereichs.
-    windowEdge = bar:CreateTexture(nil, "OVERLAY")
-    windowEdge:SetColorTexture(1, 0.6, 0.53, 0.85)
-    windowEdge:SetWidth(1)
-    windowEdge:SetPoint("TOPRIGHT", windowMark, "TOPLEFT", 0, -1)
-    windowEdge:SetPoint("BOTTOMRIGHT", windowMark, "BOTTOMLEFT", 0, 1)
-    windowEdge:Hide()
+    -- Blaues Aufleuchten ueber beiden Teilen, so lange wie der Bogen zu sehen ist.
+    -- Eigener Rahmen ueber den Balken, sonst laege das Licht darunter.
+    local shotFrame = CreateFrame("Frame", nil, content)
+    shotFrame:SetAllPoints()
+    shotFrame:SetFrameLevel(core:GetFrameLevel() + 1)
+    local shotGlow = shotFrame:CreateTexture(nil, "OVERLAY")
+    shotGlow:SetTexture(TEXTURE_PATH .. "NeonGlow")
+    shotGlow:SetVertexColor(0.3, 0.7, 1)
+    shotGlow:SetBlendMode("ADD")
+    shotGlow:SetPoint("CENTER")
+    shotGlow:SetSize(BAR_WIDTH + 12, BAR_HEIGHT + 18)
+    shotGlow:SetAlpha(0)
 
-    -- Grosses Symbol ueber dem Balken. Text gibt es nur vor dem ersten Schuss.
+    shotAnimation = shotGlow:CreateAnimationGroup()
+    local shotIn = shotAnimation:CreateAnimation("Alpha")
+    shotIn:SetFromAlpha(0)
+    shotIn:SetToAlpha(0.9)
+    shotIn:SetDuration(0.05)
+    shotIn:SetOrder(1)
+    local shotOut = shotAnimation:CreateAnimation("Alpha")
+    shotOut:SetFromAlpha(0.9)
+    shotOut:SetToAlpha(0)
+    shotOut:SetDuration(SHOT_SYMBOL_TIME - 0.05)
+    shotOut:SetOrder(2)
+
+    -- Grosses Symbol ueber der Leiste. Text gibt es nur, solange Auto Shot aus ist.
     label = core:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    label:SetPoint("BOTTOM", core, "TOP", 0, 4)
+    label:SetPoint("BOTTOM", content, "TOP", 0, 4)
 
     symbol = core:CreateTexture(nil, "OVERLAY")
     symbol:SetSize(28, 28)
-    symbol:SetPoint("BOTTOM", core, "TOP", 0, 3)
+    symbol:SetPoint("BOTTOM", content, "TOP", 0, 3)
     symbol:Hide()
+
+    -- Hinweise "anhalten" und "Zielen unterbrochen" unter der Leiste, wackeln mit.
+    hintText = core:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    hintText:SetPoint("TOP", content, "BOTTOM", 0, -3)
+    hintText:Hide()
 
     -- Warnung direkt unter dem Balken. Eigener Rahmen, denn wer aus dem Nahkampf angreift,
     -- hat noch keinen Schuss und damit auch keine sichtbare Leiste.
@@ -588,6 +778,15 @@ function AutoShot:Init(moduleDB)
         isMoving = true
         perfectStop = false
         perfectLock:Hide()
+        -- Losgelaufen, waehrend das Zielfeld sich fuellte: Das Zielen ist unterbrochen.
+        if aimStart then
+            local now = GetTime()
+            local filled = math.min((now - aimStart) / RED_WINDOW, 1)
+            if filled > 0 then
+                abortAt = now
+                abortFrom = filled
+            end
+        end
     end)
     HF:On("PLAYER_STOPPED_MOVING", function()
         isMoving = false
@@ -600,11 +799,10 @@ function AutoShot:Init(moduleDB)
             PlayEffectSound("Lock")
         end
         if reloadEnd then
-            -- Die Linie zeigt die echte Zeit im Zyklus, auch wenn der Balken im Roten wartet.
-            local cycleStart = reloadEnd + RED_WINDOW - duration
-            local position = math.min((now - cycleStart) / duration, 1)
+            -- Die Linie zeigt, wo im Nachladen angehalten wurde. Nach dem Ende steht sie ganz rechts.
+            local position = math.min((now - cycleStartedAt) / reloadTime, 1)
             stopLine:ClearAllPoints()
-            stopLine:SetPoint("CENTER", core, "LEFT", BAR_WIDTH * position, 0)
+            stopLine:SetPoint("CENTER", core, "LEFT", RELOAD_WIDTH * position, 0)
             stopLine:Show()
         end
     end)
@@ -623,10 +821,10 @@ function AutoShot:Init(moduleDB)
         autoShotActive = true
         lastShotTime = nil
         ReadSpeed()
-        -- Die Leiste erscheint erst mit dem ersten Schuss, bis dahin passiert nichts.
-        if not reloadEnd then
-            label:SetText("bereit")
-        end
+        -- Die Leiste erscheint sofort, denn der erste Schuss beginnt mit dem Zielen.
+        label:SetText("")
+        frame:Show()
+        frame:SetScript("OnUpdate", OnUpdate)
     end)
 
     -- Kommt STOP erst nach dem Kampfende, fiele die Leiste sonst nie mehr weg.
@@ -674,6 +872,9 @@ function AutoShot:SetPractice(enabled)
         StartCycle(GetTime())
     else
         ShowIdle()
+        if autoShotActive then
+            frame:SetScript("OnUpdate", OnUpdate) -- echter Auto Shot laeuft weiter
+        end
         HideIfIdle()
     end
 end

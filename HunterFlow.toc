@@ -2,7 +2,7 @@
 ## Title: HunterFlow
 ## Notes: Das Add-on für Jäger in WoW Forever. Hilft beim Kiten mit einer Auto-Shot-Leiste, weitere Module folgen.
 ## Author: Marvin
-## Version: 0.13.1
+## Version: 0.14.0
 ## SavedVariables: HunterFlowDB
 
 HunterFlow.lua
