@@ -19,6 +19,52 @@ local listeners = {}
 local modules = {}
 local positioning = false
 
+-- Texte der Oberflaeche. Englisch ist der Standard, deutsche Clients bekommen Deutsch.
+local L = {
+    shown = "Bar shown. Hold Shift and drag with the left mouse button to move it, /hflow hides it again.",
+    positioningDone = "Positioning finished.",
+    attack = "attack",
+    stop = "stop",
+    aimInterrupted = "Aim interrupted",
+    tooClose = "Too close!",
+    perfect = "Perfect!",
+    perfectStreak = "%dx Perfect!",
+    sectionBar = "Bar",
+    moveHint = "Hold Shift and drag with the left mouse button to move it",
+    practiceStart = "Start practice mode",
+    practiceStop = "End practice mode",
+    practiceRunning = "Practice mode running. Move on green, stop on gold. End it from the menu.",
+    sectionSounds = "Sounds",
+    soundsOnPerfect = "Sounds on perfect timing",
+    volume = "Volume: %d %%",
+    leftClick = "Left click",
+    menu = "Menu",
+    drag = "Drag",
+    moveButton = "Move button",
+}
+if GetLocale() == "deDE" then
+    L.shown = "Leiste eingeblendet. Mit Shift und linker Maustaste verschieben, /hflow blendet sie wieder aus."
+    L.positioningDone = "Positionieren beendet."
+    L.attack = "angreifen"
+    L.stop = "anhalten"
+    L.aimInterrupted = "Zielen unterbrochen"
+    L.tooClose = "Zu nah!"
+    L.perfect = "Perfekt!"
+    L.perfectStreak = "%dx Perfekt!"
+    L.sectionBar = "Leiste"
+    L.moveHint = "Mit Shift und linker Maustaste verschieben"
+    L.practiceStart = "Übungsmodus starten"
+    L.practiceStop = "Übungsmodus beenden"
+    L.practiceRunning = "Übungsmodus läuft. Im Grünen laufen, im Gold anhalten. Beenden über das Menü."
+    L.sectionSounds = "Töne"
+    L.soundsOnPerfect = "Töne bei perfektem Timing"
+    L.volume = "Lautstärke: %d %%"
+    L.leftClick = "Linksklick"
+    L.menu = "Menü"
+    L.drag = "Ziehen"
+    L.moveButton = "Knopf verschieben"
+end
+
 -- Meldet eine Funktion fuer ein Event an. Mit unit kommen nur Events dieser Einheit.
 function HF:On(event, handler, unit)
     if not listeners[event] then
@@ -74,9 +120,9 @@ SLASH_HUNTERFLOW1 = "/hflow"
 SlashCmdList["HUNTERFLOW"] = function()
     HF:SetPositioning(not positioning)
     if positioning then
-        HF:Print("Leiste eingeblendet. Mit Shift und linker Maustaste verschieben, /hflow blendet sie wieder aus.")
+        HF:Print(L.shown)
     else
-        HF:Print("Positionieren beendet.")
+        HF:Print(L.positioningDone)
     end
 end
 
@@ -96,6 +142,8 @@ local AIM_WIDTH, BAR_GAP = 40, 4 -- links das Zielfeld, rechts daneben die Nachl
 local RELOAD_WIDTH = BAR_WIDTH - AIM_WIDTH - BAR_GAP
 local ABORT_TIME = 0.9 -- so lange laeuft die Anzeige "Zielen unterbrochen"
 local DEFAULT_Y = -150 -- etwas unterhalb der Bildschirmmitte
+local DRAG_EXTRA_TOP = 34 -- Symbol ueber der Leiste (28 hoch, 3 Abstand) plus etwas Rand
+local DRAG_EXTRA_BOTTOM = 22 -- Hinweistext unter der Leiste
 local TEXTURE_PATH = "Interface\\AddOns\\HunterFlow\\Textures\\"
 local SOUND_PATH = "Interface\\AddOns\\HunterFlow\\Sounds\\"
 local DEFAULT_SOUND_LEVEL = 75 -- Prozent, moeglich sind 25, 50, 75 und 100
@@ -219,7 +267,7 @@ local function UpdateAbort(now)
     aimFlash:SetAlpha(flash)
 
     local alpha = age < 0.12 and age / 0.12 or math.min(1, (ABORT_TIME - age) / 0.3)
-    SetHint("Zielen unterbrochen", alpha, HINT_ABORT)
+    SetHint(L.aimInterrupted, alpha, HINT_ABORT)
 
     if age < 0.25 then
         SetAim(abortFrom * (1 - age / 0.25), true)
@@ -271,7 +319,7 @@ local function ShowIdle()
     SetProgress(0)
     SetAim(0)
     -- Ohne laufenden Auto Shot passiert nichts, bis der Jaeger angreift.
-    label:SetText(autoShotActive and "" or "angreifen")
+    label:SetText(autoShotActive and "" or L.attack)
     SetPhase("idle")
 end
 
@@ -331,7 +379,7 @@ local function OnUpdate()
         if not abortAt then
             -- Wartet aufs Anhalten, das Zielfeld pulsiert.
             aimFlash:SetAlpha(0.25 + 0.25 * math.max(0, math.sin(now * 14)))
-            SetHint("anhalten", 1, HINT_STOP)
+            SetHint(L.stop, 1, HINT_STOP)
         end
         return
     end
@@ -355,9 +403,9 @@ function StartCycle(now)
     if perfectStop and not aimDisturbed then
         SetStreak(perfectStreak + 1)
         if perfectStreak >= STREAK_MIN then
-            procText:SetFormattedText("%dx Perfekt!", perfectStreak)
+            procText:SetFormattedText(L.perfectStreak, perfectStreak)
         else
-            procText:SetText("Perfekt!")
+            procText:SetText(L.perfect)
         end
         procAnimation:Stop()
         procAnimation:Play()
@@ -474,7 +522,7 @@ local function CreateProcEffect()
     local text = core:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     text:SetPoint("BOTTOM", content, "TOP", 0, 33) -- ueber dem Symbol
     text:SetTextColor(1, 0.85, 0.35)
-    text:SetText("Perfekt!")
+    text:SetText(L.perfect)
     text:SetAlpha(0)
     procText = text
 
@@ -601,6 +649,9 @@ local function CreateBar()
     frame:SetPoint(db.point or "CENTER", UIParent, db.relativePoint or "CENTER", db.x or 0, db.y or DEFAULT_Y)
     frame:SetMovable(true)
     frame:SetClampedToScreen(true)
+    -- Greifbar ist auch das Symbol darueber und der Hinweis darunter, nicht nur der Balken.
+    -- Die Maus ist trotzdem nur bei gedruecktem Shift aktiv.
+    frame:SetHitRectInsets(0, 0, -(DRAG_EXTRA_TOP), -(DRAG_EXTRA_BOTTOM))
 
     -- Alles Sichtbare sitzt auf einem Innenrahmen. Der darf beim Abbruch wackeln,
     -- ohne die gespeicherte Position der Leiste zu veraendern.
@@ -716,7 +767,7 @@ local function CreateBar()
     rangeText = rangeFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     rangeText:SetPoint("TOP")
     rangeText:SetTextColor(1, 0.25, 0.2)
-    rangeText:SetText("Zu nah!")
+    rangeText:SetText(L.tooClose)
     rangeText:Hide()
 
     -- Senkrechte Linie: Dort stand die Zeit, als der Jaeger zuletzt angehalten hat.
@@ -944,11 +995,11 @@ local function CreateMenu()
     end
 
     -- Bereich Leiste
-    CreateSectionTitle("Leiste", -34)
+    CreateSectionTitle(L.sectionBar, -34)
 
     local hint = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     hint:SetPoint("TOPLEFT", 16, -52)
-    hint:SetText("Mit Shift und linker Maustaste verschieben")
+    hint:SetText(L.moveHint)
 
     -- Der Knopf schliesst das Menue, damit beim Ueben nichts im Bild steht.
     local practiceButton = CreateFrame("Button", "HunterFlowMenuPractice", menuFrame, "UIPanelButtonTemplate")
@@ -958,16 +1009,16 @@ local function CreateMenu()
         local start = not AutoShot:IsPracticing()
         AutoShot:SetPractice(start)
         if start then
-            HF:Print("Übungsmodus läuft. Im Grünen laufen, im Gold anhalten. Beenden über das Menü.")
+            HF:Print(L.practiceRunning)
             menuFrame:Hide()
         else
-            self:SetText("Übungsmodus starten")
+            self:SetText(L.practiceStart)
         end
     end)
-    practiceButton:SetText("Übungsmodus starten")
+    practiceButton:SetText(L.practiceStart)
 
     -- Bereich Toene
-    CreateSectionTitle("Töne", -98)
+    CreateSectionTitle(L.sectionSounds, -98)
 
     local soundCheck = CreateFrame("CheckButton", "HunterFlowMenuSounds", menuFrame, "UICheckButtonTemplate")
     soundCheck:SetPoint("TOPLEFT", 12, -112)
@@ -977,7 +1028,7 @@ local function CreateMenu()
 
     local soundLabel = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     soundLabel:SetPoint("LEFT", soundCheck, "RIGHT", 2, 1)
-    soundLabel:SetText("Töne bei perfektem Timing")
+    soundLabel:SetText(L.soundsOnPerfect)
 
     -- Regler in Stufen, WoW kann eigenen Toenen keine freie Lautstaerke mitgeben.
     local sliderName = "HunterFlowMenuVolume"
@@ -993,7 +1044,7 @@ local function CreateMenu()
     _G[sliderName .. "High"]:SetText(SOUND_LEVEL_MAX .. " %")
 
     local function ShowVolumeText(level)
-        _G[sliderName .. "Text"]:SetText("Lautstärke: " .. level .. " %")
+        _G[sliderName .. "Text"]:SetFormattedText(L.volume, level)
     end
 
     -- Beim Oeffnen setzt der Code den Wert selbst, dann soll kein Probeton erklingen.
@@ -1010,7 +1061,7 @@ local function CreateMenu()
     -- Erst nach dem Hide oben setzen, sonst liefe OnHide schon beim Aufbau.
     menuFrame:SetScript("OnShow", function()
         HF:SetPositioning(true)
-        practiceButton:SetText(AutoShot:IsPracticing() and "Übungsmodus beenden" or "Übungsmodus starten")
+        practiceButton:SetText(AutoShot:IsPracticing() and L.practiceStop or L.practiceStart)
         soundCheck:SetChecked(AutoShot:AreSoundsEnabled())
         refreshing = true
         volume:SetValue(AutoShot:GetSoundLevel())
@@ -1073,8 +1124,8 @@ local function CreateMinimapButton()
     minimapButton:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:AddLine("HunterFlow")
-        GameTooltip:AddDoubleLine("Linksklick", "Menü", 0.67, 0.83, 0.45, 1, 1, 1)
-        GameTooltip:AddDoubleLine("Ziehen", "Knopf verschieben", 0.67, 0.83, 0.45, 1, 1, 1)
+        GameTooltip:AddDoubleLine(L.leftClick, L.menu, 0.67, 0.83, 0.45, 1, 1, 1)
+        GameTooltip:AddDoubleLine(L.drag, L.moveButton, 0.67, 0.83, 0.45, 1, 1, 1)
         GameTooltip:Show()
     end)
     minimapButton:SetScript("OnLeave", function()
