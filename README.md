@@ -13,3 +13,7 @@ Deine Einstellungen bleiben dabei erhalten.
 ## Fehler melden
 
 Lua-Fehler stehen in `World of Warcraft\_forever_\Logs\General.log`. Schick diese Datei mit einer kurzen Beschreibung an Marvin.
+
+## Lizenz
+
+HunterFlow steht unter der GNU General Public License v3.0. Den vollständigen Text findest du in der Datei `LICENSE`.

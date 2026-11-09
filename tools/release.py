@@ -16,7 +16,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 UPDATE_SCRIPT = ROOT / "tools" / "HunterFlow-Update.bat"
-ADDON_PATHS = ["HunterFlow.lua", "HunterFlow.toc", "Sounds", "Textures"]
+ADDON_PATHS = ["HunterFlow.lua", "HunterFlow.toc", "LICENSE", "Sounds", "Textures"]
+# Liegen noch im Repo, werden vom Add-on aber nicht mehr benutzt.
+ADDON_EXCLUDE = [":(exclude)Textures/FrostFill.tga", ":(exclude)Textures/FrostTrack.tga"]
 
 
 def run(*args):
@@ -50,7 +52,7 @@ def main():
     notes = sys.argv[1] if len(sys.argv) > 1 else f"HunterFlow {version}"
     with tempfile.TemporaryDirectory() as temp:
         archive = Path(temp) / "HunterFlow.zip"
-        run("git", "archive", "--format=zip", "--prefix=HunterFlow/", "-o", str(archive), "HEAD", *ADDON_PATHS)
+        run("git", "archive", "--format=zip", "--prefix=HunterFlow/", "-o", str(archive), "HEAD", *ADDON_PATHS, *ADDON_EXCLUDE)
         with zipfile.ZipFile(archive) as content:
             if "HunterFlow/HunterFlow.toc" not in content.namelist():
                 raise SystemExit("Abbruch: ZIP hat nicht den erwarteten Aufbau.")
