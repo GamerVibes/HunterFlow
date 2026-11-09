@@ -95,7 +95,6 @@ local BAR_WIDTH, BAR_HEIGHT = 200, 14
 local AIM_WIDTH, BAR_GAP = 40, 4 -- links das Zielfeld, rechts daneben die Nachladeleiste
 local RELOAD_WIDTH = BAR_WIDTH - AIM_WIDTH - BAR_GAP
 local ABORT_TIME = 0.9 -- so lange laeuft die Anzeige "Zielen unterbrochen"
-local AIM_LOG_SIZE = 30 -- so viele gemessene Zielzeiten behaelt das Add-on
 local DEFAULT_Y = -150 -- etwas unterhalb der Bildschirmmitte
 local TEXTURE_PATH = "Interface\\AddOns\\HunterFlow\\Textures\\"
 local SOUND_PATH = "Interface\\AddOns\\HunterFlow\\Sounds\\"
@@ -415,34 +414,11 @@ local function ReadSpeed()
     return false
 end
 
--- Messung: Wie lange zielt Forever wirklich, vor allem vor dem ersten Schuss?
--- Gespeichert in HunterFlowDB.autoShot.aimLog, lesbar nach /reload. Wieder ausbauen,
--- sobald die Werte ausgewertet sind.
-local function LogAim(now)
-    local log = db.aimLog or {}
-    db.aimLog = log
-    local kind = lastShotTime and "weiter" or "erster"
-    local entry
-    if aimStart then
-        -- aimStart beginnt nach jeder Bewegung neu, gemessen wird also ab dem letzten Anhalten.
-        entry = string.format("%s zielen %.3f", kind, now - aimStart)
-    elseif reloadEnd and now < reloadEnd then
-        entry = string.format("%s frueh %.3f", kind, reloadEnd - now) -- Schuss vor dem erwarteten Ende
-    else
-        entry = kind .. " ohne zielen" -- Schuss kam, waehrend das Add-on keinen Stillstand sah
-    end
-    table.insert(log, entry)
-    while #log > AIM_LOG_SIZE do
-        table.remove(log, 1)
-    end
-end
-
 local function OnSpellSucceeded(_, _, spellID)
     if spellID ~= AUTO_SHOT_SPELL_ID then
         return
     end
     local now = GetTime()
-    LogAim(now)
 
     -- Im Kampf ist das Tempo gesperrt, dort zaehlt der gemessene Schussabstand.
     -- So greift auch Hast, allerdings erst ab dem zweiten Schuss damit.
@@ -767,6 +743,10 @@ end
 function AutoShot:Init(moduleDB)
     db = moduleDB
     db.rangeLog = nil -- Rest der Reichweiten-Messung
+    db.aimLog = nil -- Rest der Zielzeit-Messung, ausgewertet am 09.11.2026
+    if db.soundsOff == nil then
+        db.soundsOff = true -- Toene sind ab Werk aus, wer sie im Menue einschaltet, behaelt das
+    end
     CreateBar()
 
     HF:On("UNIT_SPELLCAST_SUCCEEDED", OnSpellSucceeded, "player")
