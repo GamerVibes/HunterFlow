@@ -28,7 +28,7 @@ local L = {
     aimInterrupted = "Aim interrupted",
     tooClose = "Too close!",
     tooFar = "Too far away!",
-    showRange = '"Too close" / "Too far" message',
+    showRange = '"Too close" / "Too far" hint',
     perfect = "Perfect!",
     perfectStreak = "%dx Perfect!",
     sectionBar = "Bar",
@@ -52,7 +52,7 @@ if GetLocale() == "deDE" then
     L.aimInterrupted = "Zielen unterbrochen"
     L.tooClose = "Zu nah!"
     L.tooFar = "Zu weit entfernt!"
-    L.showRange = 'Meldung "Zu nah" / "Zu weit"'
+    L.showRange = 'Hinweis "Zu nah" / "Zu weit"'
     L.perfect = "Perfekt!"
     L.perfectStreak = "%dx Perfekt!"
     L.sectionBar = "Leiste"
