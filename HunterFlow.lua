@@ -27,6 +27,8 @@ local L = {
     stop = "stop",
     aimInterrupted = "Aim interrupted",
     tooClose = "Too close!",
+    tooFar = "Too far away!",
+    showRange = "Show range warning",
     perfect = "Perfect!",
     perfectStreak = "%dx Perfect!",
     sectionBar = "Bar",
@@ -49,6 +51,8 @@ if GetLocale() == "deDE" then
     L.stop = "anhalten"
     L.aimInterrupted = "Zielen unterbrochen"
     L.tooClose = "Zu nah!"
+    L.tooFar = "Zu weit entfernt!"
+    L.showRange = "Reichweite anzeigen"
     L.perfect = "Perfekt!"
     L.perfectStreak = "%dx Perfekt!"
     L.sectionBar = "Leiste"
@@ -100,6 +104,7 @@ HF:On("ADDON_LOADED", function(name)
     HunterFlowDB = HunterFlowDB or {}
     HunterFlowDB.log = nil -- Reste frueherer Messungen
     HunterFlowDB.probe = nil
+    HunterFlowDB.rangeProbe = nil -- Reichweiten-Messung vom 10.11.2026, ausgewertet
     for id, module in pairs(modules) do
         HunterFlowDB[id] = HunterFlowDB[id] or {}
         module:Init(HunterFlowDB[id])
@@ -174,6 +179,8 @@ local autoShotActive = false
 local barPositioning = false
 local dragging = false
 local currentPhase -- letzte gesetzte Phase, spart unnoetige Aufrufe
+local outOfRange = false -- zu nah oder zu weit, Leiste und Symbole sind dann ausgeblendet
+local rangeDisturbed = false -- seit dem letzten Schuss ausser Reichweite gewesen
 
 -- Der ganze Balken traegt die Farbe der Phase, das liest man auch im Augenwinkel.
 -- Der Kern bleibt fast weiss, das wirkt wie Neon.
@@ -364,6 +371,14 @@ local function OnUpdate()
     SetPhase("stand")
     SetProgress(0)
 
+    -- Ausser Reichweite ist die Leiste ausgeblendet und es wird nicht gezielt. Gemessen:
+    -- Auto Shot bleibt dabei an, nach der Rueckkehr faellt der Schuss etwa 0,5 Sek. nach dem Anhalten.
+    if outOfRange then
+        aimStart = nil
+        SetAim(0)
+        return
+    end
+
     -- Ohne bekanntes Tempo ist die Nachladezeit offen, bis der zweite Schuss sie misst.
     if not duration and lastShotTime then
         SetAim(0)
@@ -416,6 +431,7 @@ function StartCycle(now)
     perfectStop = false
     perfectLock:Hide()
     aimDisturbed = false
+    rangeDisturbed = false
     aimStart = nil
     cycleStartedAt = now
     goldAnnounced = false
@@ -469,8 +485,9 @@ local function OnSpellSucceeded(_, _, spellID)
     local now = GetTime()
 
     -- Im Kampf ist das Tempo gesperrt, dort zaehlt der gemessene Schussabstand.
-    -- So greift auch Hast, allerdings erst ab dem zweiten Schuss damit.
-    if not ReadSpeed() and lastShotTime and not aimDisturbed then
+    -- So greift auch Hast, allerdings erst ab dem zweiten Schuss damit. War der Jaeger
+    -- zwischendurch zu nah oder zu weit, ist der Abstand zu lang und zaehlt nicht.
+    if not ReadSpeed() and lastShotTime and not aimDisturbed and not rangeDisturbed then
         local measured = now - lastShotTime
         if measured >= RED_WINDOW and measured <= (baseSpeed or MAX_MEASURED_SPEED) + MEASURE_TOLERANCE then
             SetDuration(measured)
@@ -578,69 +595,89 @@ local function CreateProcEffect()
     }
 end
 
--- Meldung "Zu nah!": Die Fehlermeldung des Spiels loest sie aus, danach bleibt sie, bis
--- Auto Shot das Ziel wieder erreicht. Die Reichweite allein unterscheidet nicht zwischen
--- zu nah und zu weit, die Reichweite von Raptorstoss meldete im Test immer true.
-local RANGE_CHECK_INTERVAL = 0.2
-local TOO_CLOSE_HOLD = 0.5 -- Mindestdauer, die Reichweite springt erst kurz nach dem Fehler um
-local tooClose = false
-local tooCloseUntil = 0
+-- Reichweite: "Zu nah!" oder "Zu weit entfernt!" unter der Leiste, in Reichweite nichts.
+-- Gemessen am 10.11.2026 in Forever, auch im Kampf lesbar und nicht gesperrt:
+-- C_Spell.IsSpellInRange(75) sagt nur "in Schussweite" oder nicht, egal ob zu nah oder zu weit.
+-- CheckInteractDistance(4) (etwa 28 Meter) trennt die beiden: Wer ausserhalb der Schussweite
+-- und trotzdem innerhalb von 28 Metern steht, ist zu nah, denn Auto Shot reicht weiter.
+-- Die globale Funktion IsSpellInRange gibt es in Forever nicht.
+local RANGE_CHECK_INTERVAL = 0.1
+local NEAR_DISTANCE_INDEX = 4 -- Folgen-Abstand, etwa 28 Meter
+local RANGE_COLORS = {
+    close = { 1, 0.25, 0.2 },
+    far = { 0.72, 0.74, 0.71 },
+}
 local rangeCheckElapsed = 0
+local rangeState -- nil (nichts zeigen), "ok", "close" oder "far"
 
-local function SafeText(value)
-    local ok, text = pcall(table.concat, { tostring(value) })
-    return ok and text or "gesperrt"
-end
-
-local function SpellName(spellID)
-    if GetSpellInfo then
-        return (GetSpellInfo(spellID))
+local function AutoShotInRange()
+    if C_Spell and C_Spell.IsSpellInRange then
+        return C_Spell.IsSpellInRange(AUTO_SHOT_SPELL_ID, "target")
     end
-    return C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(spellID)
-end
-
-local function SpellRange(spellID)
-    local name = SpellName(spellID)
-    if IsSpellInRange then
-        return IsSpellInRange(name, "target")
+    if IsSpellInRange and GetSpellInfo then
+        return IsSpellInRange((GetSpellInfo(AUTO_SHOT_SPELL_ID)), "target")
     end
-    return C_Spell and C_Spell.IsSpellInRange and C_Spell.IsSpellInRange(name, "target")
+    return nil
 end
 
--- pcall, damit ein gesperrter Wert nur "keine Meldung" bedeutet statt eines Fehlers.
--- Ohne Ziel kommt nil zurueck, dann gilt die Meldung ebenfalls nicht mehr.
-local function AutoShotOutOfRange()
-    local ok, result = pcall(function()
-        local inRange = SpellRange(AUTO_SHOT_SPELL_ID)
-        return inRange == false or inRange == 0
+-- Nur bei lebendem feindlichem Ziel. pcall, damit ein gesperrter Wert oder eine fehlende
+-- Funktion nur "nichts zeigen" bedeutet statt eines Lua-Fehlers.
+local function ReadRangeState()
+    local ok, state = pcall(function()
+        if not UnitExists("target") or not UnitCanAttack("player", "target") or UnitIsDead("target") then
+            return nil
+        end
+        local inRange = AutoShotInRange()
+        if inRange == nil then
+            return nil
+        end
+        if inRange == true or inRange == 1 then
+            return "ok"
+        end
+        if CheckInteractDistance("target", NEAR_DISTANCE_INDEX) then
+            return "close"
+        end
+        return "far"
     end)
-    return ok and result
+    if ok then
+        return state
+    end
+    return nil
+end
+
+-- Zeigt den Text und blendet ausserhalb der Reichweite Leiste und Symbole aus.
+-- Im Uebungsmodus, beim Positionieren und bei abgeschalteter Anzeige bleibt alles wie immer.
+local function ApplyRange(state)
+    if db.rangeOff or practiceActive or barPositioning then
+        state = nil
+    end
+    if state == rangeState then
+        return
+    end
+    rangeState = state
+    outOfRange = state == "close" or state == "far"
+    if outOfRange then
+        rangeText:SetText(state == "close" and L.tooClose or L.tooFar)
+        rangeText:SetTextColor(unpack(RANGE_COLORS[state]))
+        rangeText:Show()
+        content:Hide()
+        -- Ausser Reichweite zielt niemand: Zielen neu beginnen, ohne Abbruch-Anzeige.
+        rangeDisturbed = true
+        aimStart = nil
+        StopAbort()
+    else
+        rangeText:Hide()
+        content:Show()
+    end
 end
 
 local function CheckRange(_, elapsed)
-    if not tooClose then
-        return
-    end
     rangeCheckElapsed = rangeCheckElapsed + elapsed
     if rangeCheckElapsed < RANGE_CHECK_INTERVAL then
         return
     end
     rangeCheckElapsed = 0
-
-    if GetTime() >= tooCloseUntil and not AutoShotOutOfRange() then
-        tooClose = false
-        rangeText:Hide()
-    end
-end
-
-local function OnErrorMessage(_, message)
-    local text = SafeText(message)
-    -- Der Vergleichstext steht zusaetzlich hier, belegt ist bisher nur der deutsche Wortlaut.
-    if text == SPELL_FAILED_TOO_CLOSE or text:find("zu nah", 1, true) then
-        tooClose = true
-        tooCloseUntil = GetTime() + TOO_CLOSE_HOLD
-        rangeText:Show()
-    end
+    ApplyRange(ReadRangeState())
 end
 
 local function CreateBar()
@@ -803,7 +840,9 @@ function AutoShot:Init(moduleDB)
     HF:On("UNIT_SPELLCAST_SUCCEEDED", OnSpellSucceeded, "player")
     HF:On("UNIT_RANGEDDAMAGE", ReadSpeed, "player")
     HF:On("PLAYER_ENTERING_WORLD", ReadSpeed)
-    HF:On("UI_ERROR_MESSAGE", OnErrorMessage)
+    HF:On("PLAYER_TARGET_CHANGED", function()
+        ApplyRange(ReadRangeState()) -- sofort, nicht erst beim naechsten Pruefen
+    end)
 
     HF:On("PLAYER_STARTED_MOVING", function()
         isMoving = true
@@ -922,6 +961,15 @@ function AutoShot:AreSoundsEnabled()
     return not db.soundsOff
 end
 
+function AutoShot:SetRangeEnabled(enabled)
+    db.rangeOff = not enabled
+    ApplyRange(enabled and ReadRangeState() or nil)
+end
+
+function AutoShot:IsRangeEnabled()
+    return not db.rangeOff
+end
+
 function AutoShot:GetSoundLevel()
     return db.soundLevel or DEFAULT_SOUND_LEVEL
 end
@@ -973,7 +1021,7 @@ local function CreateMenu()
         close:SetPoint("TOPRIGHT", -4, -4)
     end
     menuFrame = window
-    menuFrame:SetSize(300, 214)
+    menuFrame:SetSize(300, 244)
     menuFrame:SetPoint("CENTER")
     menuFrame:SetFrameStrata("DIALOG")
     menuFrame:SetMovable(true)
@@ -1017,11 +1065,22 @@ local function CreateMenu()
     end)
     practiceButton:SetText(L.practiceStart)
 
+    -- "Zu nah!" und "Zu weit entfernt!" unter der Leiste
+    local rangeCheck = CreateFrame("CheckButton", "HunterFlowMenuRange", menuFrame, "UICheckButtonTemplate")
+    rangeCheck:SetPoint("TOPLEFT", 12, -94)
+    rangeCheck:SetScript("OnClick", function(self)
+        AutoShot:SetRangeEnabled(self:GetChecked() and true or false)
+    end)
+
+    local rangeLabel = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    rangeLabel:SetPoint("LEFT", rangeCheck, "RIGHT", 2, 1)
+    rangeLabel:SetText(L.showRange)
+
     -- Bereich Toene
-    CreateSectionTitle(L.sectionSounds, -98)
+    CreateSectionTitle(L.sectionSounds, -128)
 
     local soundCheck = CreateFrame("CheckButton", "HunterFlowMenuSounds", menuFrame, "UICheckButtonTemplate")
-    soundCheck:SetPoint("TOPLEFT", 12, -112)
+    soundCheck:SetPoint("TOPLEFT", 12, -142)
     soundCheck:SetScript("OnClick", function(self)
         AutoShot:SetSoundsEnabled(self:GetChecked() and true or false)
     end)
@@ -1033,7 +1092,7 @@ local function CreateMenu()
     -- Regler in Stufen, WoW kann eigenen Toenen keine freie Lautstaerke mitgeben.
     local sliderName = "HunterFlowMenuVolume"
     local volume = CreateFrame("Slider", sliderName, menuFrame, "OptionsSliderTemplate")
-    volume:SetPoint("TOPLEFT", 20, -160)
+    volume:SetPoint("TOPLEFT", 20, -190)
     volume:SetWidth(260)
     volume:SetMinMaxValues(SOUND_LEVEL_MIN, SOUND_LEVEL_MAX)
     volume:SetValueStep(SOUND_LEVEL_STEP)
@@ -1063,6 +1122,7 @@ local function CreateMenu()
         HF:SetPositioning(true)
         practiceButton:SetText(AutoShot:IsPracticing() and L.practiceStop or L.practiceStart)
         soundCheck:SetChecked(AutoShot:AreSoundsEnabled())
+        rangeCheck:SetChecked(AutoShot:IsRangeEnabled())
         refreshing = true
         volume:SetValue(AutoShot:GetSoundLevel())
         ShowVolumeText(AutoShot:GetSoundLevel())
