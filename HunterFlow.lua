@@ -28,7 +28,7 @@ local L = {
     aimInterrupted = "Aim interrupted",
     tooClose = "Too close!",
     tooFar = "Too far away!",
-    showRange = "Show range warning",
+    showRange = '"Too close" / "Too far" warning',
     perfect = "Perfect!",
     perfectStreak = "%dx Perfect!",
     sectionBar = "Bar",
@@ -52,7 +52,7 @@ if GetLocale() == "deDE" then
     L.aimInterrupted = "Zielen unterbrochen"
     L.tooClose = "Zu nah!"
     L.tooFar = "Zu weit entfernt!"
-    L.showRange = "Reichweite anzeigen"
+    L.showRange = 'Warnung "Zu nah" / "Zu weit"'
     L.perfect = "Perfekt!"
     L.perfectStreak = "%dx Perfekt!"
     L.sectionBar = "Leiste"
@@ -608,7 +608,7 @@ local RANGE_COLORS = {
     far = { 0.72, 0.74, 0.71 },
 }
 local rangeCheckElapsed = 0
-local rangeState -- nil (nichts zeigen), "ok", "close" oder "far"
+local rangeKey -- zuletzt angewendeter Zustand samt Schalter, spart unnoetige Aufrufe
 
 local function AutoShotInRange()
     if C_Spell and C_Spell.IsSpellInRange then
@@ -645,21 +645,27 @@ local function ReadRangeState()
     return nil
 end
 
--- Zeigt den Text und blendet ausserhalb der Reichweite Leiste und Symbole aus.
--- Im Uebungsmodus, beim Positionieren und bei abgeschalteter Anzeige bleibt alles wie immer.
+-- Ausserhalb der Reichweite sind Leiste und Symbole immer ausgeblendet, die Leiste kommt
+-- erst in Reichweite (Marvins Wunsch). Der Schalter im Menue betrifft nur den Text.
+-- Im Uebungsmodus und beim Positionieren bleibt die Leiste sichtbar.
 local function ApplyRange(state)
-    if db.rangeOff or practiceActive or barPositioning then
+    if practiceActive or barPositioning then
         state = nil
     end
-    if state == rangeState then
+    local key = tostring(state) .. (db.rangeOff and ":ohne Text" or ":mit Text")
+    if key == rangeKey then
         return
     end
-    rangeState = state
+    rangeKey = key
     outOfRange = state == "close" or state == "far"
     if outOfRange then
-        rangeText:SetText(state == "close" and L.tooClose or L.tooFar)
-        rangeText:SetTextColor(unpack(RANGE_COLORS[state]))
-        rangeText:Show()
+        if db.rangeOff then
+            rangeText:Hide()
+        else
+            rangeText:SetText(state == "close" and L.tooClose or L.tooFar)
+            rangeText:SetTextColor(unpack(RANGE_COLORS[state]))
+            rangeText:Show()
+        end
         content:Hide()
         -- Ausser Reichweite zielt niemand: Zielen neu beginnen, ohne Abbruch-Anzeige.
         rangeDisturbed = true
@@ -963,7 +969,7 @@ end
 
 function AutoShot:SetRangeEnabled(enabled)
     db.rangeOff = not enabled
-    ApplyRange(enabled and ReadRangeState() or nil)
+    ApplyRange(ReadRangeState())
 end
 
 function AutoShot:IsRangeEnabled()
