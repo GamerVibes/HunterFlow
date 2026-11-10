@@ -134,6 +134,9 @@ def main():
     if run("git", "branch", "--show-current") != "main":
         raise SystemExit("Abbruch: Releases nur von main.")
 
+    # gh legt die Tags nur auf GitHub an, ohne fetch kennt das lokale Repo sie nicht.
+    run("git", "fetch", "--tags", "origin")
+
     version = toc_version("HEAD")
     tag = "v" + version
     notes = args[0] if args else f"HunterFlow {version}"
