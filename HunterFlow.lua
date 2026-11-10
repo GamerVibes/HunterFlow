@@ -32,8 +32,7 @@ local L = {
     design = "Design: %s",
     style_neon = "Neon",
     style_flat = "Simple",
-    style_silver = "Classic silver",
-    style_gold = "Classic gold",
+    style_classic = "Classic",
     perfect = "Perfect!",
     perfectStreak = "%dx Perfect!",
     sectionBar = "Bar",
@@ -59,8 +58,7 @@ if GetLocale() == "deDE" then
     L.tooFar = "Zu weit entfernt!"
     L.showRange = 'Hinweis "Zu nah" / "Zu weit"'
     L.style_flat = "Schlicht"
-    L.style_silver = "Klassisch Silber"
-    L.style_gold = "Klassisch Gold"
+    L.style_classic = "Klassisch"
     L.perfect = "Perfekt!"
     L.perfectStreak = "%dx Perfekt!"
     L.sectionBar = "Leiste"
@@ -206,31 +204,40 @@ local PHASES = {
 local WHITE_TEXTURE = "Interface\\Buttons\\WHITE8X8"
 local STATUSBAR_TEXTURE = "Interface\\TargetingFrame\\UI-StatusBar"
 local SPARK_TEXTURE = "Interface\\CastingBar\\UI-CastingBar-Spark"
-local STYLE_ORDER = { "neon", "flat", "silver", "gold" }
+local STYLE_ORDER = { "neon", "flat", "classic" }
 local STYLES = {
     neon = { neon = true },
     flat = {
         fill = WHITE_TEXTURE, track = { 0.08, 0.08, 0.08, 0.85 },
         edge = WHITE_TEXTURE, edgeSize = 1, pad = 1, edgeColor = { 0, 0, 0, 1 },
     },
-    silver = {
-        fill = STATUSBAR_TEXTURE, track = { 0, 0, 0, 0.7 }, spark = true,
-        edge = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 12, pad = 4, edgeColor = { 0.85, 0.85, 0.85, 1 },
-    },
-    gold = {
+    -- Goldener Rahmen der Dialogfenster, Fuellung und Farben wie die Balken am Charakter:
+    -- Leben gruen, Energie gelb, Wut rot, Mana blau.
+    classic = {
         fill = STATUSBAR_TEXTURE, track = { 0, 0, 0, 0.7 }, spark = true,
         edge = "Interface\\DialogFrame\\UI-DialogBox-Border", edgeSize = 12, pad = 5, edgeColor = { 1, 1, 1, 1 },
+        colors = {
+            idle = { 0.5, 0.5, 0.5 },
+            shot = { 0, 0, 1 },
+            run = { 0, 1, 0 },
+            gold = { 1, 1, 0 },
+            stand = { 1, 0, 0 },
+            aimFaded = { 0.5, 0.5, 0.5 },
+        },
     },
 }
+local OLD_STYLE_NAMES = { silver = "classic", gold = "classic" } -- Testnamen vom 10.11.2026
 local style = STYLES.neon
 local aimGlass, reloadGlass, aimBorder, reloadBorder, aimSpark, reloadSpark
 
--- Neon: farbiges Leuchten plus fast weisser Kern. Sonst nur eine Fuellung in der Phasenfarbe.
-local function FillColors(look)
+-- Neon: farbiges Leuchten plus fast weisser Kern. Sonst nur eine Fuellung in der Phasenfarbe,
+-- ein Design kann dafuer eigene Farben mitbringen.
+local function FillColors(look, key)
     if style.neon then
         return look.glow, look.core, 1
     end
-    return look.glow, look.glow, 0
+    local color = style.colors and style.colors[key] or look.glow
+    return color, color, 0
 end
 
 -- Funke am Ende der Fuellung, nur in den klassischen Designs.
@@ -249,7 +256,7 @@ local function SetPhase(phase)
     end
     currentPhase = phase
     local look = PHASES[phase]
-    local glow, fill, glowAlpha = FillColors(look)
+    local glow, fill, glowAlpha = FillColors(look, phase)
     bar:SetStatusBarColor(glow[1], glow[2], glow[3], glowAlpha)
     core:SetStatusBarColor(unpack(fill))
     if look.icon then
@@ -274,7 +281,7 @@ local AIM_FADED = { glow = { 0.43, 0.35, 0.34 }, core = { 0.66, 0.58, 0.56 } }
 
 local function SetAim(value, faded)
     local look = faded and AIM_FADED or AIM_LOOK
-    local glow, fill, glowAlpha = FillColors(look)
+    local glow, fill, glowAlpha = FillColors(look, faded and "aimFaded" or "stand")
     aimBar:SetStatusBarColor(glow[1], glow[2], glow[3], glowAlpha)
     aimCore:SetStatusBarColor(unpack(fill))
     aimBar:SetValue(value)
@@ -955,6 +962,10 @@ end
 
 function AutoShot:Init(moduleDB)
     db = moduleDB
+    db.style = OLD_STYLE_NAMES[db.style] or db.style
+    if db.style and not STYLES[db.style] then
+        db.style = nil
+    end
     db.rangeLog = nil -- Rest der Reichweiten-Messung
     db.aimLog = nil -- Rest der Zielzeit-Messung, ausgewertet am 09.11.2026
     if db.soundsOff == nil then
