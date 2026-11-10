@@ -29,18 +29,16 @@ local L = {
     tooClose = "Too close!",
     tooFar = "Too far away!",
     showRange = '"Too close" / "Too far" hint',
-    design = "Design: %s",
+    designLabel = "Design",
     style_neon = "Neon",
     style_flat = "Simple",
     style_classic = "Classic",
     perfect = "Perfect!",
     perfectStreak = "%dx Perfect!",
-    sectionBar = "Bar",
     moveHint = "Hold Shift and drag with the left mouse button to move it",
     practiceStart = "Start practice mode",
     practiceStop = "End practice mode",
     practiceRunning = "Practice mode running. Move on green, stop on gold. End it from the menu.",
-    sectionSounds = "Sounds",
     soundsOnPerfect = "Sounds on",
     volume = "Volume: %d %%",
     leftClick = "Left click",
@@ -61,12 +59,10 @@ if GetLocale() == "deDE" then
     L.style_classic = "Klassisch"
     L.perfect = "Perfekt!"
     L.perfectStreak = "%dx Perfekt!"
-    L.sectionBar = "Leiste"
     L.moveHint = "Mit Shift und linker Maustaste verschieben"
     L.practiceStart = "Übungsmodus starten"
     L.practiceStop = "Übungsmodus beenden"
     L.practiceRunning = "Übungsmodus läuft. Im Grünen laufen, im Gold anhalten. Beenden über das Menü."
-    L.sectionSounds = "Töne"
     L.soundsOnPerfect = "Töne an"
     L.volume = "Lautstärke: %d %%"
     L.leftClick = "Linksklick"
@@ -1097,6 +1093,13 @@ function AutoShot:AreSoundsEnabled()
     return not db.soundsOff
 end
 
+function AutoShot:SetStyle(name)
+    if STYLES[name] then
+        db.style = name
+        ApplyStyle(name)
+    end
+end
+
 -- Schaltet zum naechsten Design weiter und gibt dessen Namen zurueck.
 function AutoShot:NextStyle()
     local current = db.style or STYLE_ORDER[1]
@@ -1148,12 +1151,74 @@ local Menu = {}
 local menuDB, minimapButton, menuFrame
 
 -- Das Menue nutzt die Fenster-Vorlagen des Spiels, wie das GamerVibes-Add-on.
+-- Aufbau kompakt wie die Optionen von WoW: links steht, was eingestellt wird, rechts der Schalter.
 local SOUND_LEVEL_MIN, SOUND_LEVEL_MAX, SOUND_LEVEL_STEP = 25, 100, 25
+local MENU_WIDTH, MENU_HEIGHT = 300, 250
 
-local function CreateSectionTitle(text, y)
-    local title = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOPLEFT", 16, y)
-    title:SetText(text)
+local function StyleName(name)
+    return L["style_" .. name] or name
+end
+
+local function CreateRowLabel(text, y)
+    local label = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    label:SetPoint("TOPLEFT", 16, y)
+    label:SetText(text)
+    return label
+end
+
+-- Auswahlliste fuer das Design. Zuerst die neue Vorlage des Spiels, dann die alte, als
+-- letzter Rueckfall ein Knopf zum Durchschalten. Gibt die Liste, einen Randausgleich
+-- und eine Funktion zum Auffrischen zurueck.
+local function CreateStyleDropdown()
+    local ok, dropdown = pcall(CreateFrame, "DropdownButton", "HunterFlowMenuStyleDropdown", menuFrame, "WowStyle1DropdownTemplate")
+    if ok and dropdown and dropdown.SetupMenu then
+        dropdown:SetWidth(140)
+        dropdown:SetupMenu(function(_, root)
+            for _, name in ipairs(STYLE_ORDER) do
+                root:CreateRadio(StyleName(name), function()
+                    return AutoShot:GetStyle() == name
+                end, function()
+                    AutoShot:SetStyle(name)
+                end)
+            end
+        end)
+        return dropdown, 0, function()
+            dropdown:GenerateMenu()
+        end
+    end
+
+    if UIDropDownMenu_Initialize then
+        local okOld, old = pcall(CreateFrame, "Frame", "HunterFlowMenuStyleList", menuFrame, "UIDropDownMenuTemplate")
+        if okOld and old then
+            UIDropDownMenu_SetWidth(old, 120)
+            UIDropDownMenu_Initialize(old, function(_, level)
+                for _, name in ipairs(STYLE_ORDER) do
+                    local info = UIDropDownMenu_CreateInfo()
+                    info.text = StyleName(name)
+                    info.checked = AutoShot:GetStyle() == name
+                    info.func = function()
+                        AutoShot:SetStyle(name)
+                        UIDropDownMenu_SetText(old, StyleName(name))
+                    end
+                    UIDropDownMenu_AddButton(info, level)
+                end
+            end)
+            -- Die alte Liste hat rechts unsichtbaren Rand, daher weiter nach aussen.
+            return old, 14, function()
+                UIDropDownMenu_SetText(old, StyleName(AutoShot:GetStyle()))
+            end
+        end
+    end
+
+    local button = CreateFrame("Button", "HunterFlowMenuStyleButton", menuFrame, "UIPanelButtonTemplate")
+    button:SetSize(140, 22)
+    button:SetScript("OnClick", function(self)
+        AutoShot:NextStyle()
+        self:SetText(StyleName(AutoShot:GetStyle()))
+    end)
+    return button, 0, function()
+        button:SetText(StyleName(AutoShot:GetStyle()))
+    end
 end
 
 local function CreateMenu()
@@ -1174,7 +1239,7 @@ local function CreateMenu()
         close:SetPoint("TOPRIGHT", -4, -4)
     end
     menuFrame = window
-    menuFrame:SetSize(300, 270)
+    menuFrame:SetSize(MENU_WIDTH, MENU_HEIGHT)
     menuFrame:SetPoint("CENTER")
     menuFrame:SetFrameStrata("DIALOG")
     menuFrame:SetMovable(true)
@@ -1195,70 +1260,30 @@ local function CreateMenu()
         title:SetText("HunterFlow")
     end
 
-    -- Bereich Leiste
-    CreateSectionTitle(L.sectionBar, -34)
-
-    local hint = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    hint:SetPoint("TOPLEFT", 16, -52)
-    hint:SetText(L.moveHint)
-
-    -- Der Knopf schliesst das Menue, damit beim Ueben nichts im Bild steht.
-    local practiceButton = CreateFrame("Button", "HunterFlowMenuPractice", menuFrame, "UIPanelButtonTemplate")
-    practiceButton:SetSize(200, 22)
-    practiceButton:SetPoint("TOP", 0, -68)
-    practiceButton:SetScript("OnClick", function(self)
-        local start = not AutoShot:IsPracticing()
-        AutoShot:SetPractice(start)
-        if start then
-            HF:Print(L.practiceRunning)
-            menuFrame:Hide()
-        else
-            self:SetText(L.practiceStart)
-        end
-    end)
-    practiceButton:SetText(L.practiceStart)
-
-    -- Design der Leiste, jeder Klick schaltet weiter. Die Leiste steht beim offenen Menue
-    -- ohnehin zum Verschieben bereit, so sieht man den Wechsel sofort.
-    local function StyleText(name)
-        return string.format(L.design, L["style_" .. name] or name)
-    end
-    local styleButton = CreateFrame("Button", "HunterFlowMenuStyle", menuFrame, "UIPanelButtonTemplate")
-    styleButton:SetSize(200, 22)
-    styleButton:SetPoint("TOP", 0, -94)
-    styleButton:SetScript("OnClick", function(self)
-        self:SetText(StyleText(AutoShot:NextStyle()))
-    end)
+    -- Design: Die Leiste steht beim offenen Menue zum Verschieben bereit,
+    -- so sieht man jeden Wechsel sofort.
+    CreateRowLabel(L.designLabel, -40)
+    local styleControl, styleInset, RefreshStyle = CreateStyleDropdown()
+    styleControl:SetPoint("TOPRIGHT", -14 + styleInset, -33)
 
     -- "Zu nah!" und "Zu weit entfernt!" unter der Leiste
+    CreateRowLabel(L.showRange, -74)
     local rangeCheck = CreateFrame("CheckButton", "HunterFlowMenuRange", menuFrame, "UICheckButtonTemplate")
-    rangeCheck:SetPoint("TOPLEFT", 12, -120)
+    rangeCheck:SetPoint("TOPRIGHT", -12, -67)
     rangeCheck:SetScript("OnClick", function(self)
         AutoShot:SetRangeEnabled(self:GetChecked() and true or false)
     end)
 
-    local rangeLabel = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    rangeLabel:SetPoint("LEFT", rangeCheck, "RIGHT", 2, 1)
-    rangeLabel:SetText(L.showRange)
-
-    -- Bereich Toene
-    CreateSectionTitle(L.sectionSounds, -154)
-
+    -- Toene und Lautstaerke. Der Regler ist grau, solange die Toene aus sind.
+    CreateRowLabel(L.soundsOnPerfect, -104)
     local soundCheck = CreateFrame("CheckButton", "HunterFlowMenuSounds", menuFrame, "UICheckButtonTemplate")
-    soundCheck:SetPoint("TOPLEFT", 12, -168)
-    soundCheck:SetScript("OnClick", function(self)
-        AutoShot:SetSoundsEnabled(self:GetChecked() and true or false)
-    end)
-
-    local soundLabel = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    soundLabel:SetPoint("LEFT", soundCheck, "RIGHT", 2, 1)
-    soundLabel:SetText(L.soundsOnPerfect)
+    soundCheck:SetPoint("TOPRIGHT", -12, -97)
 
     -- Regler in Stufen, WoW kann eigenen Toenen keine freie Lautstaerke mitgeben.
     local sliderName = "HunterFlowMenuVolume"
     local volume = CreateFrame("Slider", sliderName, menuFrame, "OptionsSliderTemplate")
-    volume:SetPoint("TOPLEFT", 20, -216)
-    volume:SetWidth(260)
+    volume:SetPoint("TOPLEFT", 20, -146)
+    volume:SetWidth(MENU_WIDTH - 40)
     volume:SetMinMaxValues(SOUND_LEVEL_MIN, SOUND_LEVEL_MAX)
     volume:SetValueStep(SOUND_LEVEL_STEP)
     if volume.SetObeyStepOnDrag then
@@ -1271,6 +1296,19 @@ local function CreateMenu()
         _G[sliderName .. "Text"]:SetFormattedText(L.volume, level)
     end
 
+    local function ShowVolumeEnabled(enabled)
+        volume:SetAlpha(enabled and 1 or 0.4)
+        if volume.SetEnabled then
+            volume:SetEnabled(enabled)
+        end
+    end
+
+    soundCheck:SetScript("OnClick", function(self)
+        local enabled = self:GetChecked() and true or false
+        AutoShot:SetSoundsEnabled(enabled)
+        ShowVolumeEnabled(enabled)
+    end)
+
     -- Beim Oeffnen setzt der Code den Wert selbst, dann soll kein Probeton erklingen.
     local refreshing = false
     volume:SetScript("OnValueChanged", function(_, value)
@@ -1281,14 +1319,42 @@ local function CreateMenu()
         end
     end)
 
+    -- Trennlinie, darunter Uebungsmodus und Hinweis zum Verschieben
+    local divider = menuFrame:CreateTexture(nil, "ARTWORK")
+    divider:SetColorTexture(0.6, 0.5, 0.2, 0.5)
+    divider:SetHeight(1)
+    divider:SetPoint("TOPLEFT", 16, -184)
+    divider:SetPoint("TOPRIGHT", -16, -184)
+
+    -- Der Knopf schliesst das Menue, damit beim Ueben nichts im Bild steht.
+    local practiceButton = CreateFrame("Button", "HunterFlowMenuPractice", menuFrame, "UIPanelButtonTemplate")
+    practiceButton:SetSize(200, 22)
+    practiceButton:SetPoint("TOP", 0, -194)
+    practiceButton:SetScript("OnClick", function(self)
+        local start = not AutoShot:IsPracticing()
+        AutoShot:SetPractice(start)
+        if start then
+            HF:Print(L.practiceRunning)
+            menuFrame:Hide()
+        else
+            self:SetText(L.practiceStart)
+        end
+    end)
+    practiceButton:SetText(L.practiceStart)
+
+    local moveHint = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    moveHint:SetPoint("TOP", 0, -224)
+    moveHint:SetText(L.moveHint)
+
     -- Solange das Menue offen ist, steht die Leiste zum Verschieben bereit.
     -- Erst nach dem Hide oben setzen, sonst liefe OnHide schon beim Aufbau.
     menuFrame:SetScript("OnShow", function()
         HF:SetPositioning(true)
         practiceButton:SetText(AutoShot:IsPracticing() and L.practiceStop or L.practiceStart)
         soundCheck:SetChecked(AutoShot:AreSoundsEnabled())
+        ShowVolumeEnabled(AutoShot:AreSoundsEnabled())
         rangeCheck:SetChecked(AutoShot:IsRangeEnabled())
-        styleButton:SetText(StyleText(AutoShot:GetStyle()))
+        RefreshStyle()
         refreshing = true
         volume:SetValue(AutoShot:GetSoundLevel())
         ShowVolumeText(AutoShot:GetSoundLevel())
