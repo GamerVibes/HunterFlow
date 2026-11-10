@@ -37,7 +37,7 @@ local L = {
     practiceStop = "End practice mode",
     practiceRunning = "Practice mode running. Move on green, stop on gold. End it from the menu.",
     sectionSounds = "Sounds",
-    soundsOnPerfect = "Sounds on perfect timing",
+    soundsOnPerfect = "Sounds on",
     volume = "Volume: %d %%",
     leftClick = "Left click",
     menu = "Menu",
@@ -61,7 +61,7 @@ if GetLocale() == "deDE" then
     L.practiceStop = "Übungsmodus beenden"
     L.practiceRunning = "Übungsmodus läuft. Im Grünen laufen, im Gold anhalten. Beenden über das Menü."
     L.sectionSounds = "Töne"
-    L.soundsOnPerfect = "Töne bei perfektem Timing"
+    L.soundsOnPerfect = "Töne an"
     L.volume = "Lautstärke: %d %%"
     L.leftClick = "Linksklick"
     L.menu = "Menü"
