@@ -34,7 +34,7 @@ ADDON_PATHS = ["HunterFlow.lua", "HunterFlow.toc", "LICENSE", "Sounds", "Texture
 ADDON_EXCLUDE = [":(exclude)Textures/FrostFill.tga", ":(exclude)Textures/FrostTrack.tga"]
 
 CURSEFORGE_API = "https://wow.curseforge.com/api"
-CURSEFORGE_PROJECT_ID = None  # Zahl aus "About Project" auf der Projektseite, noch eintragen
+CURSEFORGE_PROJECT_ID = 1794598  # "About Project" auf curseforge.com/wow/addons/hunterflow
 # Spielversion auf CurseForge. Interface 16001 in der toc entspricht dem Client 1.60.1.
 CURSEFORGE_GAME_VERSION = "1.60.1"
 KEYRING_SERVICE = "gamervibes-curseforge"
