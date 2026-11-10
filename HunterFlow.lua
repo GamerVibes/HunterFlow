@@ -986,9 +986,8 @@ HF:RegisterModule("autoShot", AutoShot)
 -- Modul: Minimap-Knopf und Menue
 --------------------------------------------------------------------------------
 
--- Runde Klassensymbole des Spiels, der Jaeger liegt in diesem Ausschnitt.
-local HUNTER_ICON = "Interface\\TargetingFrame\\UI-Classes-Circles"
-local HUNTER_ICON_LEFT, HUNTER_ICON_RIGHT, HUNTER_ICON_TOP, HUNTER_ICON_BOTTOM = 0, 0.25, 0.25, 0.5
+-- Eigenes Logo wie auf CurseForge (Laeufer mit Bogen auf der Plakette), auch in der Add-on-Liste.
+local LOGO_TEXTURE = TEXTURE_PATH .. "Logo"
 local DEFAULT_MINIMAP_ANGLE = 0 -- 0 Grad liegt rechts an der Minimap
 
 local Menu = {}
@@ -1159,8 +1158,7 @@ local function CreateMinimapButton()
     minimapButton:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
 
     local icon = minimapButton:CreateTexture(nil, "ARTWORK")
-    icon:SetTexture(HUNTER_ICON)
-    icon:SetTexCoord(HUNTER_ICON_LEFT, HUNTER_ICON_RIGHT, HUNTER_ICON_TOP, HUNTER_ICON_BOTTOM)
+    icon:SetTexture(LOGO_TEXTURE)
     icon:SetSize(17, 17)
     icon:SetPoint("TOPLEFT", 8, -7.15) -- gleiche Masse wie der GamerVibes-Knopf
 
