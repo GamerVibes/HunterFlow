@@ -29,6 +29,11 @@ local L = {
     tooClose = "Too close!",
     tooFar = "Too far away!",
     showRange = '"Too close" / "Too far" hint',
+    design = "Design: %s",
+    style_neon = "Neon",
+    style_flat = "Simple",
+    style_silver = "Classic silver",
+    style_gold = "Classic gold",
     perfect = "Perfect!",
     perfectStreak = "%dx Perfect!",
     sectionBar = "Bar",
@@ -53,6 +58,9 @@ if GetLocale() == "deDE" then
     L.tooClose = "Zu nah!"
     L.tooFar = "Zu weit entfernt!"
     L.showRange = 'Hinweis "Zu nah" / "Zu weit"'
+    L.style_flat = "Schlicht"
+    L.style_silver = "Klassisch Silber"
+    L.style_gold = "Klassisch Gold"
     L.perfect = "Perfekt!"
     L.perfectStreak = "%dx Perfekt!"
     L.sectionBar = "Leiste"
@@ -192,14 +200,58 @@ local PHASES = {
     stand = { glow = { 1, 0.29, 0.22 }, core = { 1, 0.76, 0.72 }, icon = "SymbolHalt" },
 }
 
+-- Designs der Leiste, im Menue umschaltbar. Aufbau, Phasenfarben und Symbole bleiben gleich,
+-- es aendern sich Hintergrund, Fuellung, Rahmen und das Leuchten. Die klassischen Designs
+-- nutzen Grafiken des Spiels (Fuellung wie Lebensbalken, Funke wie Zauberleiste).
+local WHITE_TEXTURE = "Interface\\Buttons\\WHITE8X8"
+local STATUSBAR_TEXTURE = "Interface\\TargetingFrame\\UI-StatusBar"
+local SPARK_TEXTURE = "Interface\\CastingBar\\UI-CastingBar-Spark"
+local STYLE_ORDER = { "neon", "flat", "silver", "gold" }
+local STYLES = {
+    neon = { neon = true },
+    flat = {
+        fill = WHITE_TEXTURE, track = { 0.08, 0.08, 0.08, 0.85 },
+        edge = WHITE_TEXTURE, edgeSize = 1, pad = 1, edgeColor = { 0, 0, 0, 1 },
+    },
+    silver = {
+        fill = STATUSBAR_TEXTURE, track = { 0, 0, 0, 0.7 }, spark = true,
+        edge = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 12, pad = 4, edgeColor = { 0.85, 0.85, 0.85, 1 },
+    },
+    gold = {
+        fill = STATUSBAR_TEXTURE, track = { 0, 0, 0, 0.7 }, spark = true,
+        edge = "Interface\\DialogFrame\\UI-DialogBox-Border", edgeSize = 12, pad = 5, edgeColor = { 1, 1, 1, 1 },
+    },
+}
+local style = STYLES.neon
+local aimGlass, reloadGlass, aimBorder, reloadBorder, aimSpark, reloadSpark
+
+-- Neon: farbiges Leuchten plus fast weisser Kern. Sonst nur eine Fuellung in der Phasenfarbe.
+local function FillColors(look)
+    if style.neon then
+        return look.glow, look.core, 1
+    end
+    return look.glow, look.glow, 0
+end
+
+-- Funke am Ende der Fuellung, nur in den klassischen Designs.
+local function PlaceSpark(spark, anchor, width, value)
+    if style.spark and value > 0 and value < 1 then
+        spark:SetPoint("CENTER", anchor, "LEFT", width * value, 0)
+        spark:Show()
+    else
+        spark:Hide()
+    end
+end
+
 local function SetPhase(phase)
     if phase == currentPhase then
         return
     end
     currentPhase = phase
     local look = PHASES[phase]
-    bar:SetStatusBarColor(unpack(look.glow))
-    core:SetStatusBarColor(unpack(look.core))
+    local glow, fill, glowAlpha = FillColors(look)
+    bar:SetStatusBarColor(glow[1], glow[2], glow[3], glowAlpha)
+    core:SetStatusBarColor(unpack(fill))
     if look.icon then
         symbol:SetTexture(TEXTURE_PATH .. look.icon)
         symbol:SetVertexColor(unpack(look.iconColor or look.glow))
@@ -213,6 +265,7 @@ end
 local function SetProgress(value)
     bar:SetValue(value)
     core:SetValue(value)
+    PlaceSpark(reloadSpark, core, RELOAD_WIDTH, value)
 end
 
 -- Fuellung des Zielfelds, rot beim Zielen, grau beim Auslaufen nach einem Abbruch.
@@ -221,10 +274,63 @@ local AIM_FADED = { glow = { 0.43, 0.35, 0.34 }, core = { 0.66, 0.58, 0.56 } }
 
 local function SetAim(value, faded)
     local look = faded and AIM_FADED or AIM_LOOK
-    aimBar:SetStatusBarColor(unpack(look.glow))
-    aimCore:SetStatusBarColor(unpack(look.core))
+    local glow, fill, glowAlpha = FillColors(look)
+    aimBar:SetStatusBarColor(glow[1], glow[2], glow[3], glowAlpha)
+    aimCore:SetStatusBarColor(unpack(fill))
     aimBar:SetValue(value)
     aimCore:SetValue(value)
+    PlaceSpark(aimSpark, aimCore, AIM_WIDTH, value)
+end
+
+-- Rahmen um ein Feld. Fehlt die Vorlage fuer Rahmen im Client, gibt es eben keinen.
+local function CreateBorder(box)
+    local ok, border = pcall(CreateFrame, "Frame", nil, box, "BackdropTemplate")
+    if not ok or not border.SetBackdrop then
+        return nil
+    end
+    border:SetFrameLevel(box:GetFrameLevel() + 3) -- ueber der Fuellung
+    border:Hide()
+    return border
+end
+
+local function StyleBorder(border, box)
+    if not border then
+        return
+    end
+    if not style.edge then
+        border:Hide()
+        return
+    end
+    border:ClearAllPoints()
+    border:SetPoint("TOPLEFT", box, "TOPLEFT", -style.pad, style.pad)
+    border:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", style.pad, -style.pad)
+    border:SetBackdrop({ edgeFile = style.edge, edgeSize = style.edgeSize })
+    border:SetBackdropBorderColor(unpack(style.edgeColor))
+    border:Show()
+end
+
+-- Wendet ein Design an, auch mitten im Kampf: Farben und Fuellstand werden neu gesetzt.
+local function ApplyStyle(name)
+    style = STYLES[name] or STYLES.neon
+    if style.neon then
+        aimGlass:SetTexture(TEXTURE_PATH .. "NeonTrackShort")
+        reloadGlass:SetTexture(TEXTURE_PATH .. "NeonTrack")
+        aimCore:SetStatusBarTexture(TEXTURE_PATH .. "NeonCoreShort")
+        core:SetStatusBarTexture(TEXTURE_PATH .. "NeonCore")
+    else
+        aimGlass:SetColorTexture(unpack(style.track))
+        reloadGlass:SetColorTexture(unpack(style.track))
+        aimCore:SetStatusBarTexture(style.fill)
+        core:SetStatusBarTexture(style.fill)
+    end
+    StyleBorder(aimBorder, aimBar:GetParent())
+    StyleBorder(reloadBorder, bar:GetParent())
+
+    local phase = currentPhase or "idle"
+    currentPhase = nil
+    SetPhase(phase)
+    SetProgress(core:GetValue())
+    SetAim(aimCore:GetValue())
 end
 
 -- Hinweis unter der Leiste. "Zu nah!" steht an derselben Stelle und hat Vorrang.
@@ -709,7 +815,7 @@ local function CreateBar()
     aimBox:SetSize(AIM_WIDTH, BAR_HEIGHT)
     aimBox:SetPoint("LEFT")
 
-    local aimGlass = aimBox:CreateTexture(nil, "BACKGROUND")
+    aimGlass = aimBox:CreateTexture(nil, "BACKGROUND")
     aimGlass:SetTexture(TEXTURE_PATH .. "NeonTrackShort")
     aimGlass:SetAllPoints()
 
@@ -741,9 +847,9 @@ local function CreateBar()
     reloadBox:SetSize(RELOAD_WIDTH, BAR_HEIGHT)
     reloadBox:SetPoint("RIGHT")
 
-    local glass = reloadBox:CreateTexture(nil, "BACKGROUND")
-    glass:SetTexture(TEXTURE_PATH .. "NeonTrack")
-    glass:SetAllPoints()
+    reloadGlass = reloadBox:CreateTexture(nil, "BACKGROUND")
+    reloadGlass:SetTexture(TEXTURE_PATH .. "NeonTrack")
+    reloadGlass:SetAllPoints()
 
     bar = CreateFrame("StatusBar", nil, reloadBox)
     bar:SetAllPoints()
@@ -755,6 +861,18 @@ local function CreateBar()
     core:SetAllPoints()
     core:SetStatusBarTexture(TEXTURE_PATH .. "NeonCore")
     core:SetMinMaxValues(0, 1)
+
+    -- Rahmen und Funken fuer die klassischen Designs, ApplyStyle zeigt sie bei Bedarf.
+    aimBorder = CreateBorder(aimBox)
+    reloadBorder = CreateBorder(reloadBox)
+    aimSpark = aimCore:CreateTexture(nil, "OVERLAY", nil, 4)
+    reloadSpark = core:CreateTexture(nil, "OVERLAY", nil, 4)
+    for _, spark in ipairs({ aimSpark, reloadSpark }) do
+        spark:SetTexture(SPARK_TEXTURE)
+        spark:SetBlendMode("ADD")
+        spark:SetSize(16, BAR_HEIGHT * 2.2)
+        spark:Hide()
+    end
 
     -- Goldener Bereich am rechten Ende, liegt ueber dem Leuchten und unter dem Kern.
     perfectMark = bar:CreateTexture(nil, "OVERLAY", nil, -1)
@@ -830,6 +948,7 @@ local function CreateBar()
     frame:SetScript("OnMouseUp", StopDragging)
     frame:SetScript("OnHide", StopDragging)
 
+    ApplyStyle(db.style)
     ShowIdle()
     frame:Hide()
 end
@@ -967,6 +1086,24 @@ function AutoShot:AreSoundsEnabled()
     return not db.soundsOff
 end
 
+-- Schaltet zum naechsten Design weiter und gibt dessen Namen zurueck.
+function AutoShot:NextStyle()
+    local current = db.style or STYLE_ORDER[1]
+    local nextIndex = 1
+    for index, name in ipairs(STYLE_ORDER) do
+        if name == current then
+            nextIndex = index % #STYLE_ORDER + 1
+        end
+    end
+    db.style = STYLE_ORDER[nextIndex]
+    ApplyStyle(db.style)
+    return db.style
+end
+
+function AutoShot:GetStyle()
+    return db.style or STYLE_ORDER[1]
+end
+
 function AutoShot:SetRangeEnabled(enabled)
     db.rangeOff = not enabled
     ApplyRange(ReadRangeState())
@@ -1026,7 +1163,7 @@ local function CreateMenu()
         close:SetPoint("TOPRIGHT", -4, -4)
     end
     menuFrame = window
-    menuFrame:SetSize(300, 244)
+    menuFrame:SetSize(300, 270)
     menuFrame:SetPoint("CENTER")
     menuFrame:SetFrameStrata("DIALOG")
     menuFrame:SetMovable(true)
@@ -1070,9 +1207,21 @@ local function CreateMenu()
     end)
     practiceButton:SetText(L.practiceStart)
 
+    -- Design der Leiste, jeder Klick schaltet weiter. Die Leiste steht beim offenen Menue
+    -- ohnehin zum Verschieben bereit, so sieht man den Wechsel sofort.
+    local function StyleText(name)
+        return string.format(L.design, L["style_" .. name] or name)
+    end
+    local styleButton = CreateFrame("Button", "HunterFlowMenuStyle", menuFrame, "UIPanelButtonTemplate")
+    styleButton:SetSize(200, 22)
+    styleButton:SetPoint("TOP", 0, -94)
+    styleButton:SetScript("OnClick", function(self)
+        self:SetText(StyleText(AutoShot:NextStyle()))
+    end)
+
     -- "Zu nah!" und "Zu weit entfernt!" unter der Leiste
     local rangeCheck = CreateFrame("CheckButton", "HunterFlowMenuRange", menuFrame, "UICheckButtonTemplate")
-    rangeCheck:SetPoint("TOPLEFT", 12, -94)
+    rangeCheck:SetPoint("TOPLEFT", 12, -120)
     rangeCheck:SetScript("OnClick", function(self)
         AutoShot:SetRangeEnabled(self:GetChecked() and true or false)
     end)
@@ -1082,10 +1231,10 @@ local function CreateMenu()
     rangeLabel:SetText(L.showRange)
 
     -- Bereich Toene
-    CreateSectionTitle(L.sectionSounds, -128)
+    CreateSectionTitle(L.sectionSounds, -154)
 
     local soundCheck = CreateFrame("CheckButton", "HunterFlowMenuSounds", menuFrame, "UICheckButtonTemplate")
-    soundCheck:SetPoint("TOPLEFT", 12, -142)
+    soundCheck:SetPoint("TOPLEFT", 12, -168)
     soundCheck:SetScript("OnClick", function(self)
         AutoShot:SetSoundsEnabled(self:GetChecked() and true or false)
     end)
@@ -1097,7 +1246,7 @@ local function CreateMenu()
     -- Regler in Stufen, WoW kann eigenen Toenen keine freie Lautstaerke mitgeben.
     local sliderName = "HunterFlowMenuVolume"
     local volume = CreateFrame("Slider", sliderName, menuFrame, "OptionsSliderTemplate")
-    volume:SetPoint("TOPLEFT", 20, -190)
+    volume:SetPoint("TOPLEFT", 20, -216)
     volume:SetWidth(260)
     volume:SetMinMaxValues(SOUND_LEVEL_MIN, SOUND_LEVEL_MAX)
     volume:SetValueStep(SOUND_LEVEL_STEP)
@@ -1128,6 +1277,7 @@ local function CreateMenu()
         practiceButton:SetText(AutoShot:IsPracticing() and L.practiceStop or L.practiceStart)
         soundCheck:SetChecked(AutoShot:AreSoundsEnabled())
         rangeCheck:SetChecked(AutoShot:IsRangeEnabled())
+        styleButton:SetText(StyleText(AutoShot:GetStyle()))
         refreshing = true
         volume:SetValue(AutoShot:GetSoundLevel())
         ShowVolumeText(AutoShot:GetSoundLevel())

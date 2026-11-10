@@ -3,7 +3,7 @@
 ## Notes: Auto Shot bar for hunters in WoW Forever. Shows when to move and when to stand still to hit the perfect gold zone.
 ## Notes-deDE: Auto-Shot-Leiste für Jäger in WoW Forever. Zeigt, wann du laufen und wann du stehen bleiben sollst, um die perfekte Goldzone zu erwischen.
 ## Author: Marvin
-## Version: 1.1.1
+## Version: 1.2.0
 ## X-License: GPL-3.0
 ## IconTexture: Interface\AddOns\HunterFlow\Textures\Logo
 ## SavedVariables: HunterFlowDB
