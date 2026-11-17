@@ -87,7 +87,7 @@ if __name__ == "__main__":
     # WoW kann eigenen Toenen keine Lautstaerke mitgeben, daher eine Datei je Stufe.
     # Die volle Stufe hat keinen Zusatz im Namen, zum Beispiel Lock.ogg und Lock50.ogg.
     lock, proc, tick = lock_sound(), proc_sound(), tick_sound()
-    for level in (100, 75, 50, 25):
+    for level in range(5, 101, 5):  # 5 bis 100 Prozent in 5er-Schritten, wie der Regler im Menue
         suffix = "" if level == 100 else str(level)
         write_ogg(tick, OUT / ("Tick%s.ogg" % suffix), 0.5 * level / 100)
         write_ogg(lock, OUT / ("Lock%s.ogg" % suffix), 0.6 * level / 100)
