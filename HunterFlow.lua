@@ -30,6 +30,7 @@ local L = {
     tooFar = "Too far away!",
     showRange = '"Too close" / "Too far" hint',
     designLabel = "Design",
+    size = "Size: %d %%",
     style_neon = "Neon",
     style_flat = "Simple",
     style_classic = "Classic",
@@ -55,6 +56,7 @@ if GetLocale() == "deDE" then
     L.tooClose = "Zu nah!"
     L.tooFar = "Zu weit entfernt!"
     L.showRange = 'Hinweis "Zu nah" / "Zu weit"'
+    L.size = "Größe: %d %%"
     L.style_flat = "Schlicht"
     L.style_classic = "Klassisch"
     L.perfect = "Perfekt!"
@@ -158,7 +160,8 @@ local DEFAULT_SOUND_LEVEL = 75 -- Prozent, moeglich sind 25, 50, 75 und 100
 local AutoShot = {}
 local db, frame, content, bar, core, perfectMark, stopLine, symbol, label, procAnimation
 local aimBar, aimCore, aimFlash -- Zielfeld links, dort steht der Jaeger bis zum Schuss
-local hintText, shotAnimation, rangeText
+local hintText, shotAnimation, rangeText, rangeFrame
+local SCALE_MIN, SCALE_MAX = 0.75, 1.5 -- Groesse der Leiste, im Menue einstellbar
 local abortAt, abortFrom -- Beginn und Fuellstand eines unterbrochenen Zielens
 local reloadTime -- Nachladezeit, also Tempo minus Zielzeit
 local perfectLock, lockAnimation -- leuchtendes Gold, sobald im goldenen Bereich angehalten wurde
@@ -798,6 +801,8 @@ end
 local function CreateBar()
     frame = CreateFrame("Frame", nil, UIParent)
     frame:SetSize(BAR_WIDTH, BAR_HEIGHT)
+    -- Die gespeicherte Position gilt in der gespeicherten Groesse, deshalb erst skalieren.
+    frame:SetScale(db.scale or 1)
     frame:SetPoint(db.point or "CENTER", UIParent, db.relativePoint or "CENTER", db.x or 0, db.y or DEFAULT_Y)
     frame:SetMovable(true)
     frame:SetClampedToScreen(true)
@@ -923,7 +928,8 @@ local function CreateBar()
 
     -- Warnung direkt unter dem Balken. Eigener Rahmen, denn wer aus dem Nahkampf angreift,
     -- hat noch keinen Schuss und damit auch keine sichtbare Leiste.
-    local rangeFrame = CreateFrame("Frame", nil, UIParent)
+    rangeFrame = CreateFrame("Frame", nil, UIParent)
+    rangeFrame:SetScale(db.scale or 1)
     rangeFrame:SetSize(1, 1)
     rangeFrame:SetPoint("TOP", frame, "BOTTOM", 0, -3)
     rangeFrame:SetScript("OnUpdate", CheckRange)
@@ -1093,6 +1099,27 @@ function AutoShot:AreSoundsEnabled()
     return not db.soundsOff
 end
 
+-- Groesse von Leiste, Symbolen und Hinweis. Die Leiste bleibt dabei an ihrem Platz:
+-- Die Abstaende zum Bildschirm zaehlen in der Groesse der Leiste und werden umgerechnet.
+function AutoShot:SetScale(scale)
+    scale = math.min(math.max(scale, SCALE_MIN), SCALE_MAX)
+    local old = frame:GetScale()
+    local factor = old / scale
+    db.point = db.point or "CENTER"
+    db.relativePoint = db.relativePoint or "CENTER"
+    db.x = (db.x or 0) * factor
+    db.y = (db.y or DEFAULT_Y) * factor
+    db.scale = scale
+    frame:SetScale(scale)
+    rangeFrame:SetScale(scale)
+    frame:ClearAllPoints()
+    frame:SetPoint(db.point, UIParent, db.relativePoint, db.x, db.y)
+end
+
+function AutoShot:GetScale()
+    return db.scale or 1
+end
+
 function AutoShot:SetStyle(name)
     if STYLES[name] then
         db.style = name
@@ -1153,7 +1180,8 @@ local menuDB, minimapButton, menuFrame
 -- Das Menue nutzt die Fenster-Vorlagen des Spiels, wie das GamerVibes-Add-on.
 -- Aufbau kompakt wie die Optionen von WoW: links steht, was eingestellt wird, rechts der Schalter.
 local SOUND_LEVEL_MIN, SOUND_LEVEL_MAX, SOUND_LEVEL_STEP = 25, 100, 25
-local MENU_WIDTH, MENU_HEIGHT = 300, 250
+local MENU_WIDTH, MENU_HEIGHT = 300, 292
+local SCALE_PERCENT_STEP = 5
 
 local function StyleName(name)
     return L["style_" .. name] or name
@@ -1266,23 +1294,50 @@ local function CreateMenu()
     local styleControl, styleInset, RefreshStyle = CreateStyleDropdown()
     styleControl:SetPoint("TOPRIGHT", -14 + styleInset, -33)
 
+    -- Groesse der Leiste in Prozent. Wirkt sofort, die Leiste steht beim offenen Menue daneben.
+    local scaleName = "HunterFlowMenuScale"
+    local scaleSlider = CreateFrame("Slider", scaleName, menuFrame, "OptionsSliderTemplate")
+    scaleSlider:SetPoint("TOPLEFT", 20, -88)
+    scaleSlider:SetWidth(MENU_WIDTH - 40)
+    scaleSlider:SetMinMaxValues(SCALE_MIN * 100, SCALE_MAX * 100)
+    scaleSlider:SetValueStep(SCALE_PERCENT_STEP)
+    if scaleSlider.SetObeyStepOnDrag then
+        scaleSlider:SetObeyStepOnDrag(true)
+    end
+    _G[scaleName .. "Low"]:SetText(SCALE_MIN * 100 .. " %")
+    _G[scaleName .. "High"]:SetText(SCALE_MAX * 100 .. " %")
+
+    local function ShowScaleText(percent)
+        _G[scaleName .. "Text"]:SetFormattedText(L.size, percent)
+    end
+
+    -- Beim Oeffnen setzt der Code den Wert selbst, dann soll nichts gespeichert werden.
+    local refreshingScale = false
+    scaleSlider:SetScript("OnValueChanged", function(_, value)
+        local percent = math.floor(value / SCALE_PERCENT_STEP + 0.5) * SCALE_PERCENT_STEP
+        ShowScaleText(percent)
+        if not refreshingScale and math.abs(percent / 100 - AutoShot:GetScale()) > 0.001 then
+            AutoShot:SetScale(percent / 100)
+        end
+    end)
+
     -- "Zu nah!" und "Zu weit entfernt!" unter der Leiste
-    CreateRowLabel(L.showRange, -74)
+    CreateRowLabel(L.showRange, -116)
     local rangeCheck = CreateFrame("CheckButton", "HunterFlowMenuRange", menuFrame, "UICheckButtonTemplate")
-    rangeCheck:SetPoint("TOPRIGHT", -12, -67)
+    rangeCheck:SetPoint("TOPRIGHT", -12, -109)
     rangeCheck:SetScript("OnClick", function(self)
         AutoShot:SetRangeEnabled(self:GetChecked() and true or false)
     end)
 
     -- Toene und Lautstaerke. Der Regler ist grau, solange die Toene aus sind.
-    CreateRowLabel(L.soundsOnPerfect, -104)
+    CreateRowLabel(L.soundsOnPerfect, -146)
     local soundCheck = CreateFrame("CheckButton", "HunterFlowMenuSounds", menuFrame, "UICheckButtonTemplate")
-    soundCheck:SetPoint("TOPRIGHT", -12, -97)
+    soundCheck:SetPoint("TOPRIGHT", -12, -139)
 
     -- Regler in Stufen, WoW kann eigenen Toenen keine freie Lautstaerke mitgeben.
     local sliderName = "HunterFlowMenuVolume"
     local volume = CreateFrame("Slider", sliderName, menuFrame, "OptionsSliderTemplate")
-    volume:SetPoint("TOPLEFT", 20, -146)
+    volume:SetPoint("TOPLEFT", 20, -188)
     volume:SetWidth(MENU_WIDTH - 40)
     volume:SetMinMaxValues(SOUND_LEVEL_MIN, SOUND_LEVEL_MAX)
     volume:SetValueStep(SOUND_LEVEL_STEP)
@@ -1323,13 +1378,13 @@ local function CreateMenu()
     local divider = menuFrame:CreateTexture(nil, "ARTWORK")
     divider:SetColorTexture(0.6, 0.5, 0.2, 0.5)
     divider:SetHeight(1)
-    divider:SetPoint("TOPLEFT", 16, -184)
-    divider:SetPoint("TOPRIGHT", -16, -184)
+    divider:SetPoint("TOPLEFT", 16, -226)
+    divider:SetPoint("TOPRIGHT", -16, -226)
 
     -- Der Knopf schliesst das Menue, damit beim Ueben nichts im Bild steht.
     local practiceButton = CreateFrame("Button", "HunterFlowMenuPractice", menuFrame, "UIPanelButtonTemplate")
     practiceButton:SetSize(200, 22)
-    practiceButton:SetPoint("TOP", 0, -194)
+    practiceButton:SetPoint("TOP", 0, -236)
     practiceButton:SetScript("OnClick", function(self)
         local start = not AutoShot:IsPracticing()
         AutoShot:SetPractice(start)
@@ -1343,7 +1398,7 @@ local function CreateMenu()
     practiceButton:SetText(L.practiceStart)
 
     local moveHint = menuFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    moveHint:SetPoint("TOP", 0, -224)
+    moveHint:SetPoint("TOP", 0, -266)
     moveHint:SetText(L.moveHint)
 
     -- Solange das Menue offen ist, steht die Leiste zum Verschieben bereit.
@@ -1355,6 +1410,10 @@ local function CreateMenu()
         ShowVolumeEnabled(AutoShot:AreSoundsEnabled())
         rangeCheck:SetChecked(AutoShot:IsRangeEnabled())
         RefreshStyle()
+        refreshingScale = true
+        scaleSlider:SetValue(AutoShot:GetScale() * 100)
+        ShowScaleText(math.floor(AutoShot:GetScale() * 100 + 0.5))
+        refreshingScale = false
         refreshing = true
         volume:SetValue(AutoShot:GetSoundLevel())
         ShowVolumeText(AutoShot:GetSoundLevel())
